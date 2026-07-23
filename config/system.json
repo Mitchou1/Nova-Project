@@ -16,8 +16,8 @@
         "auto_sleep_minutes": 5
     },
     "audio": {
-        "volume": 70,
-        "brightness": 80
+        "volume": 33,
+        "brightness": 11
     },
     "ai": {
         "whisper_model": "tiny",

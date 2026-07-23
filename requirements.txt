@@ -1,10 +1,10 @@
 # --- Dépendances multiplateformes (PC de dev + Raspberry Pi) ---
 
 # Interface graphique
-kivy[base]==2.3.0
+kivy[base]>=2.3.1
 
 # Calcul / images
-numpy>=1.26,<2.0
+numpy>=1.26
 Pillow>=10.2.0
 
 # Planification (rappels, tâches périodiques)

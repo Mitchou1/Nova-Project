@@ -1,0 +1,27 @@
+{
+    "device_name": "NOVA",
+    "version": "0.1.0",
+    "screen": {
+        "width": 800,
+        "height": 480,
+        "rotation": 0
+    },
+    "theme": "dark",
+    "language": "fr",
+    "wifi": {
+        "auto_connect": true
+    },
+    "power": {
+        "low_battery_threshold": 15,
+        "auto_sleep_minutes": 5
+    },
+    "audio": {
+        "volume": 70,
+        "brightness": 80
+    },
+    "ai": {
+        "whisper_model": "tiny",
+        "llm_model": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+        "tts_voice": "fr_FR-siwis-medium.onnx"
+    }
+}

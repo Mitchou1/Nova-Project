@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.env
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+
+# Modèles IA (trop volumineux pour git)
+models/*
+!models/.gitkeep
+
+# Données runtime
+data/*.db
+data/*.db-journal
+data/map_tiles/*
+data/logs/*
+!data/map_tiles/.gitkeep
+!data/logs/.gitkeep
+
+# Audio temporaire
+*.wav
+!docs/**/*.wav
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

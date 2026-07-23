@@ -1,0 +1,17 @@
+# --- Dépendances multiplateformes (PC de dev + Raspberry Pi) ---
+
+# Interface graphique
+kivy[base]==2.3.0
+
+# Calcul / images
+numpy>=1.26,<2.0
+Pillow>=10.2.0
+
+# Planification (rappels, tâches périodiques)
+APScheduler>=3.10.4
+
+# Réseau (tuiles cartes, mises à jour)
+requests>=2.31.0
+
+# Tests
+pytest>=8.0.0

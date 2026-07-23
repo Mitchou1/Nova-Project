@@ -6,7 +6,7 @@
         "height": 480,
         "rotation": 0
     },
-    "theme": "dark",
+    "theme": "nova_purple",
     "language": "fr",
     "wifi": {
         "auto_connect": true
@@ -23,5 +23,11 @@
         "whisper_model": "tiny",
         "llm_model": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
         "tts_voice": "fr_FR-siwis-medium.onnx"
+    },
+    "ui": {
+        "particles": "auto",
+        "waveform": "auto",
+        "animations": "auto",
+        "transition": "auto"
     }
 }

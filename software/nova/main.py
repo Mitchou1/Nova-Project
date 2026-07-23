@@ -21,13 +21,14 @@ from kivy.config import Config as KivyConfig
 KivyConfig.set("input", "mouse", "mouse,multitouch_on_demand")
 KivyConfig.set("kivy", "exit_on_escape", "1")
 
-from kivy.app import App                                     # noqa: E402
-from kivy.core.window import Window                          # noqa: E402
-from kivy.uix.screenmanager import FadeTransition, ScreenManager  # noqa: E402
+from kivy.app import App                                          # noqa: E402
+from kivy.core.window import Window                               # noqa: E402
+from kivy.uix.screenmanager import ScreenManager                  # noqa: E402
 
-from nova.launcher import AppLauncher                        # noqa: E402
-from nova.ui.home_screen import HomeScreen                   # noqa: E402
-from nova.ui.theme import theme_manager                      # noqa: E402
+from nova.launcher import AppLauncher                             # noqa: E402
+from nova.ui.home_screen import HomeScreen                        # noqa: E402
+from nova.ui.theme import theme                                   # noqa: E402
+from nova.ui.transitions import make_transition                   # noqa: E402
 
 
 class NovaApp(App):
@@ -37,8 +38,8 @@ class NovaApp(App):
 
     def build(self):
         config = get_config()
-        theme_manager.set_theme(config.get("theme", "dark"))
-        Window.clearcolor = theme_manager.get_color("background")
+        theme.set_theme(config.get("theme", "nova_dark"))
+        Window.clearcolor = theme.get_rgba("background")
 
         if is_raspberry_pi():
             Window.fullscreen = "auto"
@@ -47,10 +48,15 @@ class NovaApp(App):
             screen = config.get("screen", {})
             Window.size = (screen.get("width", 800), screen.get("height", 480))
 
-        self.sm = ScreenManager(transition=FadeTransition(duration=0.2))
+        self.sm = ScreenManager(transition=make_transition())
+
+        # L'écran d'accueil doit exister avant les apps : c'est l'écran par
+        # défaut vers lequel chaque application revient.
         self.home = HomeScreen()
         self.sm.add_widget(self.home)
 
+        # Le launcher enregistre chaque application comme un écran du
+        # ScreenManager : sans lui, `manager.current = "settings"` échoue.
         self.launcher = AppLauncher(self.sm)
         count = self.launcher.load_all_apps()
         self.home.bind_launcher(self.launcher)
@@ -58,10 +64,18 @@ class NovaApp(App):
 
         return self.sm
 
+    def on_start(self):
+        print("[nova] demarrage termine — theme : {}".format(theme.name))
+
     def on_stop(self):
+        home = getattr(self, "home", None)
+        if home is not None:
+            home.on_cleanup()
+
         launcher = getattr(self, "launcher", None)
         if launcher is not None:
             launcher.cleanup()
+
         try:
             from nova.power_manager import get_power_manager
             get_power_manager().cleanup()

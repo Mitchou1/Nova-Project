@@ -76,6 +76,7 @@ class AssistantApp(BaseApp):
         self.mic_button.text = "Stop"
         self.mic_button.background_color = theme_manager.get_color("error")
         self.chat_label.text = "J'ecoute..."
+        self.manager.get_screen("home").set_ai_active(True)
 
     def stop_and_process(self):
         self.is_listening = False

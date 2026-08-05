@@ -94,6 +94,15 @@ SYSTEME
 27. Ouvrir le navigateur (montrer une recherche a l'ecran plutot que la dire) :
    {"action": "ouvrir_navigateur", "requete": "<texte de la recherche>"}
 
+FICHIERS
+28. Lister le contenu du dossier courant, ou d'un sous-dossier nomme (optionnel) :
+   {"action": "fichiers_lister", "dossier": "<nom, optionnel>"}
+29. Creer un dossier dans le dossier courant de l'app Fichiers :
+   {"action": "fichiers_creer_dossier", "nom": "<nom>"}
+30. Supprimer un fichier ou dossier par son nom (demande TOUJOURS une confirmation
+   a l'ecran avant de supprimer reellement — ne supprime jamais en silence) :
+   {"action": "fichiers_supprimer", "nom": "<nom>"}
+
 Pour une question factuelle a laquelle tu n'es pas sur de la reponse, ou qui peut avoir
 change depuis ton entrainement, prefere "rechercher_web" plutot que d'inventer une reponse.
 
@@ -115,6 +124,8 @@ _APP_ALIASES = {
     "radio": "radio",
     "capteurs": "sensors", "capteur": "sensors", "sensors": "sensors",
     "assistant": "assistant", "nova": "assistant",
+    "fichiers": "files", "fichier": "files", "files": "files", "dossiers": "files",
+    "camera": "camera", "caméra": "camera", "photos": "camera", "appareil": "camera",
 }
 
 
@@ -202,6 +213,9 @@ _FAST_PATH_RULES = [
      lambda m: {"action": "vibrer"}),
     (re.compile(r"(prends? une photo|prendre une photo|declenche.*photo)"),
      lambda m: {"action": "prendre_photo"}),
+    (re.compile(r"(mes fichiers|liste (?:mes |les )?fichiers|"
+                r"montre (?:moi )?(?:mes |les )?fichiers)"),
+     lambda m: {"action": "fichiers_lister"}),
 ]
 
 
@@ -230,7 +244,7 @@ def try_fast_path(text):
     # "les " doit etre teste avant "l['] " : un "." joker y matcherait aussi
     # "le" (les deux premieres lettres de "les"), ce qui cassait la capture.
     m = re.search(r"\b(?:ouvre|ouvrir|lance|va dans|va sur)\s+"
-                  r"(?:les |la |le |l['’ ])?([a-z]+)", brut)
+                  r"(?:les |la |le |mes |tes |vos |l['’ ])?([a-z]+)", brut)
     if m:
         app_id = _APP_ALIASES.get(m.group(1))
         if app_id:
@@ -321,6 +335,12 @@ def execute_action(data, app=None):
         return _web_search(data)
     if action == "ouvrir_navigateur":
         return _open_browser(data)
+    if action == "fichiers_lister":
+        return _fichiers_lister(data, app)
+    if action == "fichiers_creer_dossier":
+        return _fichiers_creer_dossier(data, app)
+    if action == "fichiers_supprimer":
+        return _fichiers_supprimer(data, app)
     return None
 
 
@@ -418,11 +438,12 @@ def _aide():
         "carte (normal, marche, conduite), ouvrir une application, "
         "regler le volume, la luminosite, le WiFi, le Bluetooth ou le "
         "theme, lire les capteurs, controler la radio, donner l'heure "
-        "ou la batterie, faire vibrer l'appareil, prendre une photo, ou "
-        "chercher une information sur internet si je suis connecte. "
-        "Dites par exemple : « ouvre l'agenda », « mode conduite », "
-        "« cherche qui est Ibn Khaldoun », ou « rappelle-moi demain a "
-        "huit heures d'appeler quelqu'un »."
+        "ou la batterie, faire vibrer l'appareil, prendre une photo, "
+        "gerer vos fichiers (lister, creer un dossier, supprimer avec "
+        "confirmation), ou chercher une information sur internet si je "
+        "suis connecte. Dites par exemple : « ouvre l'agenda », « mode "
+        "conduite », « mes fichiers », « cherche qui est Ibn Khaldoun », "
+        "ou « rappelle-moi demain a huit heures d'appeler quelqu'un »."
     )
 
 
@@ -465,6 +486,107 @@ def _open_browser(data):
         return "Je n'ai pas pu ouvrir de navigateur sur cet appareil."
     return ("J'ouvre la recherche pour « {} ».".format(requete) if requete
             else "J'ouvre le navigateur.")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# FICHIERS
+# ═════════════════════════════════════════════════════════════════════════
+def _fichiers_ecran(app):
+    """Renvoie l'ecran de l'app Fichiers, meme si elle n'est pas affichee."""
+    manager = _screens(app)
+    if manager is None:
+        return None
+    try:
+        return manager.get_screen("files")
+    except Exception:
+        return None
+
+
+def _fichiers_afficher(app):
+    manager = _screens(app)
+    if manager is not None:
+        from kivy.clock import Clock
+        Clock.schedule_once(lambda dt: setattr(manager, "current", "files"), 0)
+
+
+def _fichiers_lister(data, app):
+    ecran = _fichiers_ecran(app)
+    if ecran is None:
+        return "Impossible d'acceder aux fichiers."
+
+    nom_dossier = (data.get("dossier") or "").strip().lower()
+    if nom_dossier and nom_dossier not in ("racine", "accueil", "debut"):
+        cible = None
+        try:
+            for enfant in ecran.dossier_courant.iterdir():
+                if enfant.is_dir() and enfant.name.lower() == nom_dossier:
+                    cible = enfant
+                    break
+        except Exception:
+            cible = None
+        if cible is None:
+            return "Je ne trouve pas de dossier « {} » ici.".format(data.get("dossier"))
+        ecran.ouvrir(cible)
+
+    try:
+        entrees = sorted(ecran.dossier_courant.iterdir(),
+                         key=lambda p: (not p.is_dir(), p.name.lower()))
+    except Exception as error:
+        print("[actions] lecture fichiers impossible :", error)
+        return "Je n'ai pas pu lire ce dossier."
+
+    _fichiers_afficher(app)
+    if not entrees:
+        return "Ce dossier est vide."
+    noms = [e.name for e in entrees[:8]]
+    reste = len(entrees) - len(noms)
+    phrase = "Il y a {} element{} : {}".format(
+        len(entrees), "s" if len(entrees) > 1 else "", ", ".join(noms))
+    if reste > 0:
+        phrase += ", et {} de plus".format(reste)
+    return phrase + "."
+
+
+def _fichiers_creer_dossier(data, app):
+    nom = (data.get("nom") or "").strip()
+    if not nom:
+        return "Quel nom voulez-vous donner au dossier ?"
+    ecran = _fichiers_ecran(app)
+    if ecran is None:
+        return "Impossible d'acceder aux fichiers."
+    from kivy.clock import Clock
+    Clock.schedule_once(lambda dt: ecran.creer_dossier(nom), 0)
+    _fichiers_afficher(app)
+    return "Je cree le dossier « {} ».".format(nom)
+
+
+def _fichiers_supprimer(data, app):
+    """Supprime un fichier/dossier PAR SON NOM — mais ne le fait jamais en
+    silence : ouvre la meme boite de confirmation que dans l'interface,
+    l'utilisateur doit toujours valider a l'ecran avant que rien ne soit
+    reellement efface (commande vocale mal comprise = pas de perte de
+    donnees)."""
+    nom = (data.get("nom") or "").strip()
+    if not nom:
+        return "Quel fichier ou dossier voulez-vous supprimer ?"
+    ecran = _fichiers_ecran(app)
+    if ecran is None:
+        return "Impossible d'acceder aux fichiers."
+    cible = None
+    try:
+        for enfant in ecran.dossier_courant.iterdir():
+            if enfant.name.lower() == nom.lower():
+                cible = enfant
+                break
+    except Exception:
+        cible = None
+    if cible is None:
+        return "Je ne trouve pas « {} » dans ce dossier.".format(nom)
+
+    from kivy.clock import Clock
+    _fichiers_afficher(app)
+    Clock.schedule_once(lambda dt: ecran._confirmer_suppression(cible), 0)
+    return "Confirmez la suppression de « {} » a l'ecran.".format(nom)
 
 
 def _next_event(app):

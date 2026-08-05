@@ -45,22 +45,37 @@ class SpeechToText:
     SAMPLE_RATE = 16000
     RECORD_SECONDS = 5   # durée d'écoute par défaut
 
-    def __init__(self, model_name="small"):
-        self.model_name = model_name
+    def __init__(self, model_name=None):
+        self.model_name = model_name or self._configured_model_name()
         self.model = None
         self.ready = False
         self._try_load()
+
+    @staticmethod
+    def _configured_model_name():
+        """Taille du modele Whisper : suit config.ai.whisper_model si
+        defini (audit : cette cle existait dans system.json mais etait
+        silencieusement ignoree — le code forcait "base" sur Pi quelle que
+        soit la config). Sans config explicite, "small" par defaut : cible
+        confirmee Raspberry Pi 5 (RAM largement suffisante pour le meme
+        modele qu'en dev PC, contrairement au Pi Zero 2W vise a l'origine).
+        """
+        try:
+            from nova.utils.config_loader import get_config
+            configure = (get_config().get("ai", {}) or {}).get("whisper_model")
+            if configure:
+                return configure
+        except Exception:
+            pass
+        return "small"
 
     def _try_load(self):
         """Charge le modèle Whisper si faster-whisper est disponible."""
         try:
             from faster_whisper import WhisperModel
-            from nova.utils.platform_utils import is_raspberry_pi
-            # modèle plus léger sur Pi pour la vitesse
-            name = "base" if is_raspberry_pi() else self.model_name
-            self.model = WhisperModel(name, device="cpu", compute_type="int8")
+            self.model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
             self.ready = True
-            print("[stt] Whisper chargé :", name)
+            print("[stt] Whisper chargé :", self.model_name)
         except Exception as error:
             print("[stt] Whisper indisponible ({}), mode simulation".format(error))
             self.model = None
@@ -82,7 +97,8 @@ class SpeechToText:
     def transcribe(self, audio_data=None):
         """Transcrit l'audio en texte. Si audio_data est None, enregistre d'abord.
 
-        Renvoie le texte reconnu (français).
+        La langue suit la config (language: fr/en/ar) au lieu d'etre figee
+        en francais — coherent avec le multilingue de assistant_actions.py.
         """
         if self.ready and self.model is not None:
             if audio_data is None:
@@ -90,7 +106,8 @@ class SpeechToText:
             if audio_data is None:
                 return ""
             try:
-                segments, _info = self.model.transcribe(audio_data, language="fr")
+                segments, _info = self.model.transcribe(
+                    audio_data, language=self._langue_configuree())
                 text = "".join(seg.text for seg in segments).strip()
                 return text
             except Exception as error:
@@ -99,6 +116,15 @@ class SpeechToText:
         # Repli simulation
         time.sleep(0.3)
         return random.choice(self._SIMULATED)
+
+    @staticmethod
+    def _langue_configuree():
+        try:
+            from nova.utils.config_loader import get_config
+            langue = (get_config().get("language") or "fr").strip().lower()
+            return langue if langue in ("fr", "en", "ar") else "fr"
+        except Exception:
+            return "fr"
 
     @property
     def simulated(self):
@@ -132,6 +158,13 @@ class LanguageModel:
         try:
             from llama_cpp import Llama
             from nova.utils.platform_utils import is_raspberry_pi
+            # Cible confirmee Raspberry Pi 5 : 4 coeurs physiques (Cortex-A76),
+            # comme le Pi Zero 2W vise a l'origine — n_threads=4 reste donc le
+            # bon choix ici (un thread par coeur physique ; au-dela, on
+            # oversubscrit sans gain reel pour un charge CPU-bound comme
+            # l'inference llama.cpp). Seule la taille du modele Whisper
+            # (voir SpeechToText._configured_model_name) profite vraiment de
+            # la RAM bien plus large du Pi 5 par rapport au Zero 2W.
             n_threads = 4 if is_raspberry_pi() else 8
             self.model = Llama(
                 model_path=str(path),
@@ -292,17 +325,34 @@ class AssistantEngine:
         self.stt = SpeechToText()
         self.llm = LanguageModel()
         self.tts = TextToSpeech()
-        self.history = []  # [{"role": "user"|"assistant", "content": str}, ...]
+        # Persiste entre redemarrages (memory_store.py, SQLite) au lieu de
+        # repartir de zero a chaque relance de NOVA.
+        try:
+            from nova import memory_store
+            self.history = memory_store.load_history(max_turns=self.MAX_HISTORY_TURNS)
+        except Exception as error:
+            print("[memoire] chargement historique impossible :", error)
+            self.history = []  # [{"role": "user"|"assistant", "content": str}, ...]
 
     def _remember(self, role, content):
         self.history.append({"role": role, "content": content})
         limite = self.MAX_HISTORY_TURNS * 2
         if len(self.history) > limite:
             self.history = self.history[-limite:]
+        try:
+            from nova import memory_store
+            memory_store.append_turn(role, content, max_turns=self.MAX_HISTORY_TURNS)
+        except Exception as error:
+            print("[memoire] sauvegarde tour impossible :", error)
 
     def reset_conversation(self):
         """Efface l'historique (ex. bouton « nouvelle conversation »)."""
         self.history = []
+        try:
+            from nova import memory_store
+            memory_store.clear_history()
+        except Exception as error:
+            print("[memoire] effacement impossible :", error)
 
     def status(self):
         """Décrit l'état des trois briques (réel ou simulé)."""
@@ -338,6 +388,17 @@ class AssistantEngine:
 
         rapide = actions.try_fast_path(text)
         if rapide is not None:
+            # Meta-action sur l'IA elle-meme (pas un appareil a piloter) :
+            # traitee ici, pas dans assistant_actions.execute_action qui
+            # n'a pas de reference au moteur.
+            if rapide.get("action") == "effacer_historique":
+                self.reset_conversation()
+                confirmation = "Historique effacé."
+                if on_token:
+                    for word in confirmation.split(" "):
+                        on_token(word + " ")
+                        time.sleep(0.02)
+                return confirmation
             confirmation = actions.execute_action(rapide, app=app)
             if confirmation:
                 if on_token:

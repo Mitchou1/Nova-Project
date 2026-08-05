@@ -14,6 +14,8 @@ LOGS_DIR = DATA_DIR / "logs"
 MAP_TILES_DIR = DATA_DIR / "map_tiles"
 MAPS_DATA_DIR = ROOT_DIR / "maps_data"
 SYSTEM_CONFIG = CONFIG_DIR / "system.json"
+# Surcharge locale (cles API, secrets) : jamais suivie par git (voir .gitignore).
+SYSTEM_CONFIG_LOCAL = CONFIG_DIR / "system.local.json"
 CALENDAR_DB = DATA_DIR / "calendar.db"
 
 _RUNTIME_DIRS = (DATA_DIR, LOGS_DIR, MAP_TILES_DIR, MODELS_DIR)

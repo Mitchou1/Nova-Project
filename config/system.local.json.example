@@ -1,0 +1,7 @@
+{
+    "_comment": "Copiez ce fichier en system.local.json et remplissez vos propres cles. system.local.json n'est jamais suivi par git (voir .gitignore).",
+    "map": {
+        "api_key": "VOTRE_CLE_MAPTILER",
+        "ors_key": "VOTRE_CLE_OPENROUTESERVICE"
+    }
+}

@@ -329,10 +329,26 @@ class AssistantEngine:
         mesure de sa génération. Une commande d'action (le premier caractère
         non-blanc est "{") reste muette tant qu'elle n'est pas complète, pour
         ne jamais afficher de JSON brut à l'écran.
-        """
-        if self.llm.ready and self.llm.model is not None:
-            from nova import assistant_actions as actions
 
+        Un chemin rapide (sans LLM) traite d'abord les commandes courtes et
+        non-ambiguës (ouvrir une app, changer de mode/thème, heure, aide...) :
+        réponse instantanée et fiable à 100 %, sans attendre le modèle.
+        """
+        from nova import assistant_actions as actions
+
+        rapide = actions.try_fast_path(text)
+        if rapide is not None:
+            confirmation = actions.execute_action(rapide, app=app)
+            if confirmation:
+                if on_token:
+                    for word in confirmation.split(" "):
+                        on_token(word + " ")
+                        time.sleep(0.02)
+                self._remember("user", text)
+                self._remember("assistant", confirmation)
+                return confirmation
+
+        if self.llm.ready and self.llm.model is not None:
             system = actions.build_system_prompt()
             messages = [{"role": "system", "content": system}]
             messages.extend(self.history)

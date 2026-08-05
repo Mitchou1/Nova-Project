@@ -55,6 +55,7 @@ class MapsApp(BaseApp):
         self.longitude = 10.1815
         self.speed = 0.0
         self.altitude = 15.0
+        self.mode = "normal"
         super().__init__(**kwargs)
         Clock.schedule_interval(self._simulate_movement, 2.0)
         # Gestionnaire du serveur de carte local (démarre/arrête avec l'app)
@@ -197,6 +198,7 @@ class MapsApp(BaseApp):
             ("Centrer", "center"),
         ]
 
+        self._mode_buttons = {}
         for text, mode in modes:
             btn = NeonButton(
                 text=text,
@@ -205,6 +207,9 @@ class MapsApp(BaseApp):
             )
             btn.bind(on_press=lambda x, m=mode: self._set_mode(m))
             btn_layout.add_widget(btn)
+            if mode != "center":
+                self._mode_buttons[mode] = btn
+        self._mark_active_mode()
 
         _opaque_backdrop(btn_layout)
         main.add_widget(btn_layout)
@@ -270,8 +275,8 @@ class MapsApp(BaseApp):
             self.map_widget.set_center(dlat, dlon)
         Clock.schedule_once(show_markers, 0)
 
-        # Calculer le vrai trajet par les routes
-        r = navigation.route(slat, slon, dlat, dlon, profile="driving-car")
+        # Calculer le vrai trajet par les routes (le profil suit le mode actif)
+        r = navigation.route(slat, slon, dlat, dlon, profile=self._profile_for_mode())
         if r and r.get("points"):
             def show_route(dt):
                 self.map_widget.set_route(r["points"])
@@ -465,14 +470,91 @@ class MapsApp(BaseApp):
         if hasattr(self, "map_widget"):
             self.map_widget.set_markers(
                 [(self.latitude, self.longitude, (0.0, 0.94, 1.0))])
+            # Marche/Conduite : la carte suit la position (on est en mouvement).
+            # Normal : on laisse l'utilisateur cadrer librement.
+            if self.mode in ("walk", "drive"):
+                self.map_widget.set_center(self.latitude, self.longitude)
+
+    # Cahier des charges Phase 6 : "Mode normal" (navigation classique, vue
+    # d'ensemble) vs "Mode personnalise" (interface minimaliste adaptee au
+    # deplacement). Chaque mode a un vrai comportement distinct : zoom,
+    # suivi automatique de la position, et profil de routage.
+    _ZOOM_PAR_MODE = {"normal": 14, "walk": 17, "drive": 15}
+    _PROFIL_PAR_MODE = {"normal": "driving-car", "walk": "foot-walking", "drive": "driving-car"}
+    _LIBELLE_MODE = {"normal": "Mode normal", "walk": "Mode marche (pieton)",
+                     "drive": "Mode conduite"}
 
     def _set_mode(self, mode):
-        """Change le mode d'affichage."""
+        """Change le mode d'affichage/navigation."""
         print(f"[maps] Mode : {mode}")
         if mode == "center":
-            # Recentrer la carte sur la position actuelle
             if hasattr(self, "map_widget"):
                 self.map_widget.set_center(self.latitude, self.longitude)
+            return
+
+        if mode not in self._ZOOM_PAR_MODE:
+            return
+        changement = mode != self.mode
+        self.mode = mode
+        self._mark_active_mode()
+
+        if hasattr(self, "map_widget"):
+            self.map_widget.set_zoom(self._ZOOM_PAR_MODE[mode])
+            # Marche/Conduite : on se deplace, la carte doit suivre.
+            # Normal : vue d'ensemble, on laisse l'utilisateur cadrer lui-meme.
+            if mode in ("walk", "drive"):
+                self.map_widget.set_center(self.latitude, self.longitude)
+
+        if changement and not self._nav_active:
+            self._set_nav_info(self._LIBELLE_MODE[mode])
+            Clock.schedule_once(lambda *_a: self._clear_transient_info(), 1.6)
+
+        # Un trajet est deja affiche : le recalculer avec le profil du
+        # nouveau mode (a pied vs en voiture change vraiment l'itineraire).
+        if self._current_dest is not None and changement:
+            self._recompute_route_for_mode()
+
+    def _clear_transient_info(self):
+        """Efface le message de mode si rien de plus important ne l'a remplace."""
+        if self.nav_info.text in self._LIBELLE_MODE.values():
+            self.nav_info.text = ""
+            self.nav_info.opacity = 0
+
+    def _mark_active_mode(self):
+        """Met en evidence le bouton du mode actif (bordure accentuee)."""
+        for cle, btn in getattr(self, "_mode_buttons", {}).items():
+            actif = cle == self.mode
+            btn.border_width = 2.4 if actif else 1.2
+            btn._refresh()
+
+    def _profile_for_mode(self):
+        return self._PROFIL_PAR_MODE.get(self.mode, "driving-car")
+
+    def _recompute_route_for_mode(self):
+        """Recalcule l'itineraire courant avec le profil du mode actif."""
+        from nova import navigation
+
+        dest = self._current_dest
+        slat, slon = self.latitude, self.longitude
+        dlat, dlon = dest["lat"], dest["lon"]
+        profil = self._profile_for_mode()
+
+        def travailler():
+            r = navigation.route(slat, slon, dlat, dlon, profile=profil)
+            if not r or not r.get("points"):
+                return
+
+            def appliquer(dt):
+                self.map_widget.set_route(r["points"])
+                self._current_route = r
+                self._set_nav_info(
+                    "[b]{}[/b]  ·  {:.1f} km  ·  {:.0f} min  ·  {}".format(
+                        dest["name"][:40], r["distance_km"], r["duration_min"],
+                        self._LIBELLE_MODE[self.mode]))
+            Clock.schedule_once(appliquer, 0)
+
+        import threading
+        threading.Thread(target=travailler, daemon=True).start()
 
 
 NovaApp = MapsApp

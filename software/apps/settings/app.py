@@ -228,15 +228,16 @@ class SettingsApp(BaseApp):
         )
         content.add_widget(self.wifi_row)
 
-        # Bluetooth (mock)
+        # Bluetooth
         bt_actif = bool(self._config.get("bluetooth_enabled", False))
         bt_switch = Switch(active=bt_actif, size=(dp(50), dp(30)))
         bt_switch.bind(active=self._on_bluetooth)
-        content.add_widget(SettingsRow(
+        self.bt_row = SettingsRow(
             "Bluetooth",
-            "Désactivé",
+            "ACTIVE" if bt_actif else "DESACTIVE",
             bt_switch
-        ))
+        )
+        content.add_widget(self.bt_row)
 
         # ─── SECTION SYSTÈME ───────────────────────────────────────
         content.add_widget(self._section_title(" Système"))
@@ -250,6 +251,7 @@ class SettingsApp(BaseApp):
         ))
 
         update_switch = Switch(active=self.auto_update, size=(dp(50), dp(30)))
+        update_switch.bind(active=self._on_auto_update)
         content.add_widget(SettingsRow(
             "Mises à jour auto",
             "Télécharger automatiquement",
@@ -264,13 +266,7 @@ class SettingsApp(BaseApp):
             height=dp(150),
             corner_radius=dp(2)
         )
-        infos = [
-            ("Version NOVA", "v0.2.0-beta"),
-            ("Système", "Raspberry Pi OS Lite 64-bit"),
-            ("Python", "3.11.x"),
-            ("Kivy", "2.3.0"),
-            ("Espace libre", "45.2 GB / 59.5 GB"),
-        ]
+        infos = self._system_infos()
         y_pos = 0.85
         for label, value in infos:
             info_card.add_widget(Label(
@@ -306,6 +302,47 @@ class SettingsApp(BaseApp):
         scroll.add_widget(content)
         main.add_widget(scroll)
 
+    def _system_infos(self):
+        """Infos systeme reelles (etaient codees en dur, ex. "Kivy 2.3.0" /
+        "45.2 GB / 59.5 GB" affiches quel que soit l'appareil reel)."""
+        import platform
+        import shutil
+        import sys
+
+        try:
+            import kivy
+            version_kivy = kivy.__version__
+        except Exception:
+            version_kivy = "?"
+
+        try:
+            from nova.utils.platform_utils import is_raspberry_pi
+            systeme = "Raspberry Pi OS ({})".format(platform.machine()) \
+                if is_raspberry_pi() else "{} ({})".format(platform.system(), platform.machine())
+        except Exception:
+            systeme = platform.platform()
+
+        try:
+            from nova.paths import DATA_DIR
+            usage = shutil.disk_usage(str(DATA_DIR))
+            espace = "{:.1f} Go libres / {:.1f} Go".format(
+                usage.free / 1e9, usage.total / 1e9)
+        except Exception:
+            espace = "?"
+
+        return [
+            ("Version NOVA", "v0.2.0-beta"),
+            ("Système", systeme),
+            ("Python", "{}.{}.{}".format(*sys.version_info[:3])),
+            ("Kivy", version_kivy),
+            ("Espace libre", espace),
+        ]
+
+    def _on_auto_update(self, instance, value):
+        self.auto_update = bool(value)
+        self._config.set("auto_update", bool(value))
+        print("[settings] Mises a jour auto :", "actif" if value else "inactif")
+
     def _section_title(self, text):
         """Crée un titre de section."""
         return Label(
@@ -339,6 +376,8 @@ class SettingsApp(BaseApp):
     def _on_bluetooth(self, instance, value):
         """Active/desactive le Bluetooth (sauvegarde + action reelle sur le Pi)."""
         self._config.set("bluetooth_enabled", bool(value))
+        if hasattr(self, "bt_row"):
+            self.bt_row.set_subtitle("ACTIVE" if value else "DESACTIVE")
         try:
             from nova.utils.platform_utils import is_raspberry_pi
             if is_raspberry_pi():
@@ -357,16 +396,34 @@ class SettingsApp(BaseApp):
         self._apply_brightness(self.brightness)
         print(f"[settings] Luminosité : {self.brightness}%")
 
+    # Ecrans tactiles officiels Raspberry Pi les plus courants : premier
+    # chemin de backlight sysfs trouve = celui utilise.
+    _CHEMINS_BACKLIGHT = (
+        "/sys/class/backlight/rpi_backlight/brightness",
+        "/sys/class/backlight/10-0045/brightness",
+    )
+
     def _apply_brightness(self, value):
-        """Applique la luminosité à l'écran (réel sur le Pi, sinon ignoré)."""
+        """Applique la luminosite au retroeclairage reel sur le Pi (si un
+        des chemins backlight connus existe), sinon ignore proprement."""
         try:
             from nova.utils.platform_utils import is_raspberry_pi
-            if is_raspberry_pi():
-                # Emplacement pour le contrôle réel du rétroéclairage, ex. :
-                #   Path("/sys/class/backlight/.../brightness").write_text(...)
-                pass
-        except Exception:
-            pass
+            if not is_raspberry_pi():
+                return
+            from pathlib import Path
+            for chemin in self._CHEMINS_BACKLIGHT:
+                cible = Path(chemin)
+                if not cible.exists():
+                    continue
+                max_brightness = 255
+                max_path = cible.parent / "max_brightness"
+                if max_path.exists():
+                    max_brightness = int(max_path.read_text().strip())
+                niveau = max(1, round(max_brightness * value / 100.0))
+                cible.write_text(str(niveau))
+                return
+        except Exception as error:
+            print("[settings] luminosite :", error)
 
     def _on_volume(self, instance, value):
         self.volume = int(value)

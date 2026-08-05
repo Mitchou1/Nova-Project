@@ -2,9 +2,9 @@
 """App Caméra NOVA (cahier des charges, Phase 8).
 
 Fonctions : apercu, prise de photo, galerie des cliches.
-La Pi Camera n'etant presente que sur le Raspberry Pi, l'app fonctionne en
-mode simulation sur PC : elle affiche une mire et enregistre des fichiers
-de test, pour que toute la logique soit deja verifiee.
+Sur le Raspberry Pi : Pi Camera via libcamera-still. Sur PC : vraie capture
+webcam (ffmpeg + v4l2) si une camera est branchee ; sinon repli honnete
+(fichier marqueur, etat affiche clairement) pour que la chaine reste testable.
 """
 
 import os
@@ -30,6 +30,19 @@ def _sur_pi():
         return is_raspberry_pi()
     except Exception:
         return False
+
+
+def _peripherique_webcam():
+    """Renvoie le premier /dev/videoN trouve, ou None."""
+    for candidat in ("/dev/video0", "/dev/video1", "/dev/video2"):
+        if os.path.exists(candidat):
+            return candidat
+    return None
+
+
+def _webcam_disponible():
+    import shutil
+    return shutil.which("ffmpeg") is not None and _peripherique_webcam() is not None
 
 
 def _dossier_photos():
@@ -121,8 +134,7 @@ class CameraApp(BaseApp):
                          pos_hint={"center_x": 0.5, "top": 0.97},
                          corner_radius=dp(2))
         self.etat_label = Label(
-            text=("CAMÉRA PRÊTE" if _sur_pi()
-                  else "MODE SIMULATION — AUCUNE CAMÉRA CONNECTÉE"),
+            text=self._texte_etat_repos(),
             font_name=fonts.FONT_MONO, font_size=dp(9),
             color=theme_manager.get_color("text_secondary"),
             pos_hint={"center_x": 0.5, "center_y": 0.5},
@@ -217,12 +229,23 @@ class CameraApp(BaseApp):
                 self.etat_label.text = "ERREUR DE CAPTURE"
                 return None
         else:
-            # Simulation : on cree un fichier marqueur pour verifier la chaine
-            try:
-                chemin.write_bytes(b"")
-            except Exception as error:
-                print("[camera] ecriture impossible :", error)
-                return None
+            # PC : vraie capture webcam via ffmpeg (v4l2) si une camera est
+            # branchee — pas de fichier vide silencieux quand on peut faire
+            # mieux. Repli honnete (fichier marqueur + etat explicite) sinon.
+            if self._capturer_webcam(chemin):
+                pass
+            else:
+                try:
+                    chemin.write_bytes(b"")
+                except Exception as error:
+                    print("[camera] ecriture impossible :", error)
+                    return None
+                self.etat_label.text = "AUCUNE WEBCAM — FICHIER TEST (VIDE)"
+                self.photos.insert(0, nom)
+                self._maj_compteur()
+                Clock.schedule_once(lambda *_a: self._reset_etat(), 2.5)
+                print("[camera] photo (marqueur, aucune webcam) :", chemin)
+                return str(chemin)
 
         self.photos.insert(0, nom)
         self._maj_compteur()
@@ -231,9 +254,36 @@ class CameraApp(BaseApp):
         print("[camera] photo :", chemin)
         return str(chemin)
 
+    def _capturer_webcam(self, chemin):
+        """Capture une vraie image via ffmpeg + v4l2 (pas de dependance
+        Python lourde type OpenCV pour un simple instantane de test)."""
+        peripherique = _peripherique_webcam()
+        if peripherique is None:
+            return False
+        import shutil
+        import subprocess
+        if shutil.which("ffmpeg") is None:
+            return False
+        try:
+            resultat = subprocess.run(
+                ["ffmpeg", "-y", "-f", "v4l2", "-i", peripherique,
+                 "-frames:v", "1", "-update", "1", str(chemin)],
+                capture_output=True, timeout=6)
+            return (resultat.returncode == 0 and chemin.exists()
+                    and chemin.stat().st_size > 0)
+        except Exception as error:
+            print("[camera] capture webcam impossible :", error)
+            return False
+
+    def _texte_etat_repos(self):
+        if _sur_pi():
+            return "CAMÉRA PRÊTE"
+        if _webcam_disponible():
+            return "WEBCAM PRÊTE ({})".format(_peripherique_webcam())
+        return "AUCUNE WEBCAM DÉTECTÉE"
+
     def _reset_etat(self):
-        self.etat_label.text = ("CAMÉRA PRÊTE" if _sur_pi()
-                                else "MODE SIMULATION — AUCUNE CAMÉRA CONNECTÉE")
+        self.etat_label.text = self._texte_etat_repos()
 
     def _afficher_galerie(self):
         """Liste les photos dans la zone du bas."""

@@ -14,6 +14,8 @@ Le flux :
 """
 
 import json
+import re
+import unicodedata
 from datetime import datetime, timedelta
 
 
@@ -44,6 +46,8 @@ NAVIGATION
    {"action": "naviguer", "destination": "<lieu>"}
 9. Position GPS actuelle :
    {"action": "ma_position"}
+9b. Changer le mode de la carte (normal, marche, conduite) :
+   {"action": "regler_mode_carte", "mode": "<nom>"}
 
 REGLAGES
 10. Regler le volume (0 a 100) :
@@ -82,6 +86,13 @@ SYSTEME
    {"action": "vibrer", "duree": <nombre>}
 24. Prendre une photo avec la camera :
    {"action": "prendre_photo"}
+25. Lister ce que tu sais faire (l'utilisateur demande de l'aide, ne sait pas quoi dire) :
+   {"action": "aide"}
+
+Si la demande ne correspond a AUCUNE action ci-dessus (par exemple discuter, repondre a
+une question generale), ne renvoie jamais de JSON : reponds normalement en texte.
+Si elle correspond a une action mais qu'il manque une information (ex. quelle destination,
+quelle heure), pose la question en texte plutot que de deviner une valeur.
 
 Aujourd'hui nous sommes le {today}. Pour "demain", "apres-demain", calcule la date reelle.
 Reponds en francais."""
@@ -144,6 +155,88 @@ def extract_json(text):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Chemin rapide (sans LLM) pour les commandes les plus frequentes
+# ─────────────────────────────────────────────────────────────────────────────
+# Le LLM (3B, quantifie, execute sur un Pi Zero 2 W a terme) prend plusieurs
+# secondes et ne garantit jamais un JSON valide. Pour les commandes courtes et
+# non-ambigues qui n'ont pas d'argument libre a extraire (ouvrir une app,
+# changer de mode/theme, donner l'heure...), on les reconnait directement ici :
+# reponse instantanee et 100% fiable. Tout le reste (creer un evenement,
+# calculer un itineraire, discuter...) continue de passer par le LLM.
+
+def _sans_accents(texte):
+    nfkd = unicodedata.normalize("NFKD", texte)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+_MODE_THEME_MOTS = {
+    "classic": "classic", "classique": "classic",
+    "cyberpunk": "cyberpunk", "cyber": "cyberpunk",
+    "undercover": "undercover", "discret": "undercover",
+}
+
+_FAST_PATH_RULES = [
+    (re.compile(r"\b(quelle heure|quelle est l.heure|quel jour|quelle date|"
+                r"quelle est la date)\b"),
+     lambda m: {"action": "heure_date"}),
+    (re.compile(r"\b(^aide$|que peux.tu faire|qu.est.ce que tu sais faire|"
+                r"liste des commandes|comment ca marche)\b"),
+     lambda m: {"action": "aide"}),
+    (re.compile(r"\b(retour a l.accueil|reviens a l.accueil|va a l.accueil|"
+                r"^accueil$|^retour$|^maison$)\b"),
+     lambda m: {"action": "accueil"}),
+    (re.compile(r"prochain (rendez.vous|rdv|evenement)"),
+     lambda m: {"action": "prochain_evenement"}),
+    (re.compile(r"(niveau de batterie|batterie restante|combien de batterie|"
+                r"^batterie\??$)"),
+     lambda m: {"action": "batterie"}),
+    (re.compile(r"(fais vibrer|^vibre\.?$|declenche.*vibration)"),
+     lambda m: {"action": "vibrer"}),
+    (re.compile(r"(prends? une photo|prendre une photo|declenche.*photo)"),
+     lambda m: {"action": "prendre_photo"}),
+]
+
+
+def try_fast_path(text):
+    """Reconnait une commande frequente sans passer par le LLM.
+
+    Renvoie un dict d'action (meme forme que extract_json) si reconnue, ou
+    None sinon — dans ce cas l'appelant doit se rabattre sur le LLM.
+    """
+    if not text:
+        return None
+    brut = _sans_accents(text.strip().lower())
+
+    # "mode X" est ambigu entre theme d'interface et mode de la carte :
+    # on tranche selon le mot capture.
+    m = re.search(r"\bmode ([a-z]+)\b", brut)
+    if m:
+        mot = m.group(1)
+        if mot in _MODE_THEME_MOTS:
+            return {"action": "changer_theme", "theme": _MODE_THEME_MOTS[mot]}
+        if mot in _ALIAS_MODE_CARTE:
+            return {"action": "regler_mode_carte", "mode": mot}
+
+    # "ouvre/lance/va dans <app>" — reconnait meme avec du texte apres le nom
+    # (ex. "ouvre la carte s'il te plait" -> on ne garde que le 1er mot utile).
+    # "les " doit etre teste avant "l['] " : un "." joker y matcherait aussi
+    # "le" (les deux premieres lettres de "les"), ce qui cassait la capture.
+    m = re.search(r"\b(?:ouvre|ouvrir|lance|va dans|va sur)\s+"
+                  r"(?:les |la |le |l['’ ])?([a-z]+)", brut)
+    if m:
+        app_id = _APP_ALIASES.get(m.group(1))
+        if app_id:
+            return {"action": "ouvrir_app", "app": app_id}
+
+    for motif, fabrique in _FAST_PATH_RULES:
+        trouve = motif.search(brut)
+        if trouve:
+            return fabrique(trouve)
+
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Exécution des actions
 # ─────────────────────────────────────────────────────────────────────────────
 def execute_action(data, app=None):
@@ -175,6 +268,8 @@ def execute_action(data, app=None):
         return _navigate(data, app)
     if action == "ma_position":
         return _my_position(app)
+    if action == "regler_mode_carte":
+        return _set_map_mode(data, app)
     if action == "regler_volume":
         return _set_volume(data)
     if action == "regler_luminosite":
@@ -203,6 +298,8 @@ def execute_action(data, app=None):
         return _vibrate(data)
     if action == "prendre_photo":
         return _take_photo(app)
+    if action == "aide":
+        return _aide()
     return None
 
 
@@ -289,6 +386,21 @@ def _time_date():
     now = datetime.now()
     return "Il est {} et nous sommes le {}.".format(
         now.strftime("%H:%M"), now.strftime("%d/%m/%Y"))
+
+
+def _aide():
+    """Liste ce que NOVA sait faire — utile quand l'utilisateur ne sait pas
+    quoi demander, ou quand une commande n'a pas ete comprise."""
+    return (
+        "Je peux : gerer votre agenda (ajouter/voir/supprimer un "
+        "rendez-vous), calculer un itineraire et changer le mode de la "
+        "carte (normal, marche, conduite), ouvrir une application, "
+        "regler le volume, la luminosite, le WiFi, le Bluetooth ou le "
+        "theme, lire les capteurs, controler la radio, donner l'heure "
+        "ou la batterie, faire vibrer l'appareil, ou prendre une photo. "
+        "Dites par exemple : « ouvre l'agenda », « mode conduite », ou "
+        "« rappelle-moi demain a huit heures d'appeler quelqu'un »."
+    )
 
 
 def _next_event(app):
@@ -389,6 +501,36 @@ def _my_position(app):
     except Exception as error:
         print("[actions] position impossible :", error)
     return "Position GPS indisponible."
+
+
+_ALIAS_MODE_CARTE = {
+    "normal": "normal", "standard": "normal", "classique": "normal",
+    "marche": "walk", "pieton": "walk", "piéton": "walk", "a pied": "walk",
+    "à pied": "walk", "walk": "walk",
+    "conduite": "drive", "voiture": "drive", "route": "drive", "drive": "drive",
+}
+
+
+def _set_map_mode(data, app):
+    """Change le mode d'affichage/navigation de l'app Maps (Phase 6 : mode
+    normal vs mode personnalise marche/conduite)."""
+    demande = (data.get("mode") or "").strip().lower()
+    mode = _ALIAS_MODE_CARTE.get(demande)
+    if not mode:
+        return "Mode inconnu. Dites normal, marche ou conduite."
+    manager = _screens(app)
+    if manager is None:
+        return "Impossible de changer le mode de la carte."
+    from kivy.clock import Clock
+
+    def appliquer(_dt):
+        manager.current = "maps"
+        ecran = manager.get_screen("maps")
+        if hasattr(ecran, "_set_mode"):
+            ecran._set_mode(mode)
+    Clock.schedule_once(appliquer, 0)
+    libelles = {"normal": "normal", "walk": "marche", "drive": "conduite"}
+    return "Mode carte : {}.".format(libelles[mode])
 
 
 # ═════════════════════════════════════════════════════════════════════════

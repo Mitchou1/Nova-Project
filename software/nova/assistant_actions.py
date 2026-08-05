@@ -88,6 +88,14 @@ SYSTEME
    {"action": "prendre_photo"}
 25. Lister ce que tu sais faire (l'utilisateur demande de l'aide, ne sait pas quoi dire) :
    {"action": "aide"}
+26. Chercher sur internet une information que tu ne connais pas ou qui peut avoir change
+   (actualite, definition, biographie, fait recent...) :
+   {"action": "rechercher_web", "requete": "<texte de la recherche>"}
+27. Ouvrir le navigateur (montrer une recherche a l'ecran plutot que la dire) :
+   {"action": "ouvrir_navigateur", "requete": "<texte de la recherche>"}
+
+Pour une question factuelle a laquelle tu n'es pas sur de la reponse, ou qui peut avoir
+change depuis ton entrainement, prefere "rechercher_web" plutot que d'inventer une reponse.
 
 Si la demande ne correspond a AUCUNE action ci-dessus (par exemple discuter, repondre a
 une question generale), ne renvoie jamais de JSON : reponds normalement en texte.
@@ -228,6 +236,15 @@ def try_fast_path(text):
         if app_id:
             return {"action": "ouvrir_app", "app": app_id}
 
+    # "cherche/recherche/trouve X sur internet/le web/google" — phrasing
+    # sans ambiguite (le qualificatif final la distingue d'une simple
+    # discussion), donc sure a court-circuiter le LLM.
+    m = re.search(
+        r"(?:cherche|recherche|trouve(?:.moi)?)\s+(.+?)\s+"
+        r"sur (?:internet|le web|google|duckduckgo)\b", brut)
+    if m:
+        return {"action": "rechercher_web", "requete": m.group(1).strip()}
+
     for motif, fabrique in _FAST_PATH_RULES:
         trouve = motif.search(brut)
         if trouve:
@@ -300,6 +317,10 @@ def execute_action(data, app=None):
         return _take_photo(app)
     if action == "aide":
         return _aide()
+    if action == "rechercher_web":
+        return _web_search(data)
+    if action == "ouvrir_navigateur":
+        return _open_browser(data)
     return None
 
 
@@ -397,10 +418,53 @@ def _aide():
         "carte (normal, marche, conduite), ouvrir une application, "
         "regler le volume, la luminosite, le WiFi, le Bluetooth ou le "
         "theme, lire les capteurs, controler la radio, donner l'heure "
-        "ou la batterie, faire vibrer l'appareil, ou prendre une photo. "
-        "Dites par exemple : « ouvre l'agenda », « mode conduite », ou "
-        "« rappelle-moi demain a huit heures d'appeler quelqu'un »."
+        "ou la batterie, faire vibrer l'appareil, prendre une photo, ou "
+        "chercher une information sur internet si je suis connecte. "
+        "Dites par exemple : « ouvre l'agenda », « mode conduite », "
+        "« cherche qui est Ibn Khaldoun », ou « rappelle-moi demain a "
+        "huit heures d'appeler quelqu'un »."
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# RECHERCHE WEB (capacite "JARVIS" — necessite une connexion internet)
+# ═════════════════════════════════════════════════════════════════════════
+def _web_search(data):
+    """Cherche une information reelle sur le web et la lit a voix haute.
+
+    Contrairement au reste de NOVA, ceci depend du reseau : echoue de
+    facon honnete (message clair) si hors ligne, plutot que d'inventer
+    une reponse ou de planter.
+    """
+    requete = (data.get("requete") or "").strip()
+    if not requete:
+        return "Que voulez-vous que je cherche ?"
+    from nova import web_search
+    if not web_search.is_online():
+        return "Pas de connexion internet pour faire une recherche."
+    resultats = web_search.search(requete)
+    reponse = web_search.format_for_speech(resultats, requete)
+    if not reponse:
+        return "Je n'ai rien trouve pour « {} ».".format(requete)
+    return reponse
+
+
+def _open_browser(data):
+    """Ouvre le navigateur (ex. pour approfondir une recherche a l'ecran)."""
+    requete = (data.get("requete") or "").strip()
+    import urllib.parse
+    import webbrowser
+    url = ("https://duckduckgo.com/?" + urllib.parse.urlencode({"q": requete})
+           if requete else "https://duckduckgo.com/")
+    try:
+        ouvert = webbrowser.open(url)
+    except Exception as error:
+        print("[actions] ouverture navigateur impossible :", error)
+        ouvert = False
+    if not ouvert:
+        return "Je n'ai pas pu ouvrir de navigateur sur cet appareil."
+    return ("J'ouvre la recherche pour « {} ».".format(requete) if requete
+            else "J'ouvre le navigateur.")
 
 
 def _next_event(app):

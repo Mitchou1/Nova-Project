@@ -126,10 +126,35 @@ class AssistantApp(BaseApp):
         # chacune — piege classique du mutable default applique a un
         # attribut de classe).
         self.conversation = []
-        # Moteur IA (chaîne parole → texte → réponse → voix)
-        from nova.ai_engine import get_engine
-        self._engine = get_engine()
+        # Moteur IA : chargement PARESSEUX (audit, severite HAUTE) — charger
+        # Whisper + le LLM (~2,4 Go) + Piper de facon synchrone ici figeait
+        # toute l'application au demarrage, AVANT meme l'affichage de la
+        # fenetre (AppLauncher instancie toutes les apps sur le thread
+        # principal Kivy pendant App.build()). Le moteur ne se charge donc
+        # plus qu'au premier usage reel, dans _get_engine() — appele depuis
+        # _run_pipeline/_run_typed_pipeline qui tournent deja dans un thread
+        # separe, jamais sur le thread UI.
+        self._engine = None
         self._last_audio = None
+
+    def _get_engine(self):
+        """Charge le moteur IA au premier appel reel (voir __init__)."""
+        if self._engine is None:
+            from kivy.clock import Clock
+            Clock.schedule_once(
+                lambda dt: self._set_status("Chargement du modèle IA..."), 0)
+            from nova.ai_engine import get_engine
+            moteur = get_engine()
+            self._engine = moteur
+            if moteur.fully_simulated():
+                # Audit (severite HAUTE) : un echec de chargement (modele
+                # manquant, OOM, fichier corrompu) tombait en simulation
+                # sans jamais le signaler — un print() seul est invisible
+                # sur un wearable sans terminal.
+                Clock.schedule_once(lambda dt: self._add_message(
+                    "⚠ Modèle IA indisponible — je réponds en mode simulation.",
+                    is_user=False), 0)
+        return self._engine
 
     def build_ui(self):
         super().build_ui()
@@ -243,7 +268,7 @@ class AssistantApp(BaseApp):
     def _run_typed_pipeline(self, user_text):
         """Traite une commande TAPÉE : texte -> réponse -> (action)."""
         from kivy.clock import Clock
-        engine = self._engine
+        engine = self._get_engine()
         # Afficher le message de l'utilisateur
         Clock.schedule_once(lambda dt: self._add_message(user_text, is_user=True), 0)
         Clock.schedule_once(lambda dt: self._set_status("Réflexion..."), 0)
@@ -311,7 +336,7 @@ class AssistantApp(BaseApp):
     def _run_pipeline(self):
         """Chaîne complète : écoute micro → Whisper → Qwen → (action)."""
         from kivy.clock import Clock
-        engine = self._engine
+        engine = self._get_engine()
 
         # 1) Écoute + transcription (audio -> texte)
         # Whisper enregistre lui-même 5s depuis le micro puis transcrit.

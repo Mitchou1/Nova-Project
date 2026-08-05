@@ -103,6 +103,14 @@ FICHIERS
    a l'ecran avant de supprimer reellement — ne supprime jamais en silence) :
    {"action": "fichiers_supprimer", "nom": "<nom>"}
 
+LANGUE
+31. Changer la langue de reponse (francais, anglais, arabe) :
+   {"action": "changer_langue", "langue": "<nom>"}
+
+SUGGESTIONS
+32. Proposer des suggestions proactives (prochain evenement, destination frequente) :
+   {"action": "suggestions"}
+
 Pour une question factuelle a laquelle tu n'es pas sur de la reponse, ou qui peut avoir
 change depuis ton entrainement, prefere "rechercher_web" plutot que d'inventer une reponse.
 
@@ -129,11 +137,45 @@ _APP_ALIASES = {
 }
 
 
-def build_system_prompt():
-    """Prompt système complet donné au LLM (avec la date du jour)."""
+# Le schema d'actions (ACTIONS_DESCRIPTION) reste toujours en francais : les
+# noms d'action et cles JSON sont des identifiants fixes du code, pas du
+# texte a traduire. Seule l'instruction de langue de reponse change.
+_PROMPT_INTRO = {
+    "fr": ("Tu es NOVA, un assistant personnel embarqué, concis et utile. "
+           "Tu réponds en français.\n\n"),
+    "en": ("Tu es NOVA, un assistant personnel embarqué, concis et utile. "
+           "Answer the user in English. The action schema below is written "
+           "in French (action names and JSON keys) — keep them exactly as "
+           "given when producing a command, but write any reply to the "
+           "user in English.\n\n"),
+    "ar": ("Tu es NOVA, un assistant personnel embarqué, concis et utile. "
+           "أجب المستخدم باللغة العربية. مخطط الإجراءات أدناه مكتوب "
+           "بالفرنسية (أسماء الإجراءات ومفاتيح JSON) — احتفظ بها كما هي "
+           "بالضبط عند إصدار أمر، لكن اكتب أي رد للمستخدم باللغة "
+           "العربية.\n\n"),
+}
+
+_LANGUES_VALIDES = tuple(_PROMPT_INTRO)
+
+
+def _current_language():
+    try:
+        from nova.utils.config_loader import get_config
+        langue = (get_config().get("language") or "fr").strip().lower()
+        return langue if langue in _LANGUES_VALIDES else "fr"
+    except Exception:
+        return "fr"
+
+
+def build_system_prompt(language=None):
+    """Prompt système complet donné au LLM (avec la date du jour).
+
+    language: "fr"/"en"/"ar" — lue depuis la config si non fournie.
+    """
+    if language not in _PROMPT_INTRO:
+        language = _current_language()
     today = datetime.now().strftime("%A %d %B %Y")
-    base = ("Tu es NOVA, un assistant personnel embarqué, concis et utile. "
-            "Tu réponds en français.\n\n")
+    base = _PROMPT_INTRO[language]
     # On remplace le marqueur de date manuellement plutôt qu'avec .format(),
     # car ACTIONS_DESCRIPTION contient des accolades JSON que .format()
     # tenterait (à tort) d'interpréter.
@@ -216,6 +258,15 @@ _FAST_PATH_RULES = [
     (re.compile(r"(mes fichiers|liste (?:mes |les )?fichiers|"
                 r"montre (?:moi )?(?:mes |les )?fichiers)"),
      lambda m: {"action": "fichiers_lister"}),
+    (re.compile(r"(?:parle|reponds|passe|switch to|speak)(?:\s+(?:en|in|to))?\s+"
+                r"(francais|french|anglais|english|arabe|arabic)"),
+     lambda m: {"action": "changer_langue", "langue": m.group(1)}),
+    (re.compile(r"(efface (?:l.historique|la conversation)|oublie tout|"
+                r"nouvelle conversation|clear history|forget everything)"),
+     lambda m: {"action": "effacer_historique"}),
+    (re.compile(r"(des suggestions|une suggestion|quoi de neuf|"
+                r"des recommandations|suggest something)"),
+     lambda m: {"action": "suggestions"}),
 ]
 
 
@@ -271,13 +322,32 @@ def try_fast_path(text):
 # Exécution des actions
 # ─────────────────────────────────────────────────────────────────────────────
 def execute_action(data, app=None):
-    """Exécute la commande JSON. Renvoie une phrase de confirmation (str)
-    ou None si l'action est inconnue.
-
-    app : référence à l'application NOVA (pour agir : agenda, navigation…).
-          Peut être None (dans ce cas, certaines actions sont limitées).
+    """Exécute la commande JSON. Renvoie une phrase de confirmation (str),
+    None si l'action est inconnue, ou un message d'échec honnête si le
+    handler a leve une exception inattendue (durcissement audit : un JSON
+    malforme ou un argument innattendu du LLM ne doit jamais faire planter
+    la chaine assistant/reponse vocale — l'exception est loggee, pas propagee).
     """
+    if not isinstance(data, dict):
+        print("[actions] commande invalide (pas un objet) :", data)
+        return None
+    try:
+        return _dispatch_action(data, app)
+    except Exception as error:
+        print("[actions] erreur inattendue sur l'action « {} » : {}".format(
+            data.get("action"), error))
+        return "Je n'ai pas pu terminer cette action."
+
+
+def _dispatch_action(data, app=None):
     action = data.get("action")
+
+    if action:
+        try:
+            from nova import memory_store
+            memory_store.note_usage("action", action)
+        except Exception as error:
+            print("[actions] compteur de frequence :", error)
 
     if action == "ajouter_evenement":
         return _add_event(data, app)
@@ -341,6 +411,10 @@ def execute_action(data, app=None):
         return _fichiers_creer_dossier(data, app)
     if action == "fichiers_supprimer":
         return _fichiers_supprimer(data, app)
+    if action == "changer_langue":
+        return _set_language(data)
+    if action == "suggestions":
+        return _suggestions(app)
     return None
 
 
@@ -440,10 +514,12 @@ def _aide():
         "theme, lire les capteurs, controler la radio, donner l'heure "
         "ou la batterie, faire vibrer l'appareil, prendre une photo, "
         "gerer vos fichiers (lister, creer un dossier, supprimer avec "
-        "confirmation), ou chercher une information sur internet si je "
-        "suis connecte. Dites par exemple : « ouvre l'agenda », « mode "
-        "conduite », « mes fichiers », « cherche qui est Ibn Khaldoun », "
-        "ou « rappelle-moi demain a huit heures d'appeler quelqu'un »."
+        "confirmation), chercher une information sur internet si je suis "
+        "connecte, changer de langue (francais, anglais, arabe), ou vous "
+        "faire des suggestions. Dites par exemple : « ouvre l'agenda », "
+        "« mode conduite », « mes fichiers », « cherche qui est Ibn "
+        "Khaldoun », « des suggestions », ou « rappelle-moi demain a huit "
+        "heures d'appeler quelqu'un »."
     )
 
 
@@ -660,6 +736,11 @@ def _navigate(data, app):
     destination = (data.get("destination") or "").strip()
     if not destination:
         return "Vers quelle destination souhaitez-vous aller ?"
+    try:
+        from nova import memory_store
+        memory_store.note_usage("destination", destination)
+    except Exception as error:
+        print("[actions] compteur destinations :", error)
     manager = _screens(app)
     if manager is not None:
         from kivy.clock import Clock
@@ -802,6 +883,69 @@ def _set_theme(data):
     except Exception as error:
         print("[actions] theme :", error)
         return "Je n'ai pas pu changer le theme."
+
+
+_ALIAS_LANGUE = {
+    "francais": "fr", "français": "fr", "french": "fr", "fr": "fr",
+    "anglais": "en", "english": "en", "en": "en",
+    "arabe": "ar", "arabic": "ar", "ar": "ar", "عربي": "ar", "العربية": "ar",
+}
+
+_CONFIRMATION_LANGUE = {
+    "fr": "Langue changée pour le français.",
+    "en": "Language switched to English.",
+    "ar": "تم تغيير اللغة إلى العربية.",
+}
+
+
+def _set_language(data):
+    """Change la langue de reponse (prompt systeme LLM + Whisper STT).
+
+    Limite assumee et documentee : une seule voix Piper FR est installee
+    (fr_FR-siwis-medium.onnx) ; en anglais/arabe, NOVA repond par ecrit sans
+    forcer une synthese vocale dans la mauvaise langue plutot que de mentir
+    sur une capacite vocale qui n'existe pas encore.
+    """
+    demande = (data.get("langue") or "").strip().lower()
+    langue = _ALIAS_LANGUE.get(demande)
+    if not langue:
+        return "Langue inconnue. Dites français, anglais ou arabe."
+    try:
+        _config().set("language", langue)
+        return _CONFIRMATION_LANGUE[langue]
+    except Exception as error:
+        print("[actions] langue :", error)
+        return "Je n'ai pas pu changer la langue."
+
+
+def _suggestions(app):
+    """Suggestions proactives : prochain evenement + destination la plus
+    recherchee. Base sur des comptes SQL simples (memory_store.top_usage,
+    storage.next_event_label) — statistique, pas de l'apprentissage
+    automatique (cf. JARVIS_INTEGRATION_PLAN.md pour la distinction)."""
+    parties = []
+
+    try:
+        from apps.calendar import storage
+        label = storage.next_event_label()
+        if label and "aucun" not in label.lower():
+            parties.append("Votre prochain événement : {}.".format(label))
+    except Exception as error:
+        print("[actions] suggestions agenda :", error)
+
+    try:
+        from nova import memory_store
+        top = memory_store.top_usage("destination", limit=1)
+        if top and top[0]["count"] >= 2:
+            parties.append(
+                "Vous recherchez souvent « {} » — voulez-vous que je calcule "
+                "l'itinéraire ?".format(top[0]["value"]))
+    except Exception as error:
+        print("[actions] suggestions destination :", error)
+
+    if not parties:
+        return "Je n'ai pas encore assez d'historique pour vous faire des suggestions."
+    return " ".join(parties)
 
 
 def _bool_actif(data, defaut=True):

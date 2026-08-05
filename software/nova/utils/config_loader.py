@@ -3,7 +3,7 @@
 
 import json
 
-from nova.paths import SYSTEM_CONFIG
+from nova.paths import SYSTEM_CONFIG, SYSTEM_CONFIG_LOCAL
 
 DEFAULT_CONFIG = {
     "device_name": "NOVA",
@@ -47,10 +47,23 @@ class ConfigLoader:
     def load(self):
         try:
             with open(self.config_path, "r", encoding="utf-8") as handle:
-                return _merge(DEFAULT_CONFIG, json.load(handle))
+                config = _merge(DEFAULT_CONFIG, json.load(handle))
         except (OSError, ValueError) as error:
             print("[config] lecture impossible ({}), valeurs par defaut".format(error))
-            return dict(DEFAULT_CONFIG)
+            config = dict(DEFAULT_CONFIG)
+        return _merge(config, self._load_local_overlay())
+
+    @staticmethod
+    def _load_local_overlay():
+        """Cles API/secrets (map.api_key, map.ors_key...) : audit securite —
+        elles etaient en clair dans system.json, deja committees sur GitHub.
+        Desormais lues depuis system.local.json (non suivi par git), fusion
+        par-dessus la config normale. Absent = simplement ignore."""
+        try:
+            with open(SYSTEM_CONFIG_LOCAL, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return {}
 
     def get(self, key, default=None):
         return self.config.get(key, default)

@@ -291,12 +291,24 @@ class HomeScreen(Screen):
         self.launcher = None
         self._clocks = []
         self.build_ui()
+        self.update_sensors()
+        self.update_status()
+
+    def _start_clocks(self):
+        """Demarre les rafraichissements periodiques (audit : tournaient
+        avant en continu 24h/24 des la construction de l'ecran, meme apres
+        avoir quitte l'accueil pour une autre app — decharge batterie)."""
+        if self._clocks:
+            return  # deja demarres
         self._clocks.append(Clock.schedule_interval(self.update_time, 1))
         self._clocks.append(Clock.schedule_interval(self.update_event, 60))
         self._clocks.append(Clock.schedule_interval(self.update_sensors, 15))
         self._clocks.append(Clock.schedule_interval(self.update_status, 10))
-        self.update_sensors()
-        self.update_status()
+
+    def _stop_clocks(self):
+        for c in self._clocks:
+            c.cancel()
+        self._clocks = []
 
     # ------------------------------------------------------------------
     def build_ui(self):
@@ -675,6 +687,7 @@ class HomeScreen(Screen):
             self.update_status()
 
     def on_pre_enter(self, *_args):
+        self._start_clocks()
         self.update_time()
         self.update_event()
         # Prépare le fondu d'apparition
@@ -724,9 +737,8 @@ class HomeScreen(Screen):
 
     def on_leave(self, *_args):
         self.stop_ai_scan()
+        self._stop_clocks()
 
     def on_cleanup(self):
         self.stop_ai_scan()
-        for c in self._clocks:
-            c.cancel()
-        self._clocks = []
+        self._stop_clocks()

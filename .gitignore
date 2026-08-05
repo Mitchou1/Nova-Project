@@ -36,6 +36,10 @@ software.zip
 # Cache Piper/whisper
 models/llm/.cache/
 
+# Secrets locaux (cles API) : audit securite — jamais dans system.json suivi
+# par git. Voir config/system.local.json.example.
+config/system.local.json
+
 # OS
 .DS_Store
 Thumbs.db

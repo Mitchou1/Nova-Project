@@ -119,11 +119,13 @@ class AssistantApp(BaseApp):
     is_listening = BooleanProperty(False)
     status_text = StringProperty("Appuyez et parlez")
 
-    # Historique conversation
-    conversation = []
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        # Historique conversation (audit : etait un attribut de CLASSE,
+        # partage entre toutes les instances au lieu d'etre propre a
+        # chacune — piege classique du mutable default applique a un
+        # attribut de classe).
+        self.conversation = []
         # Moteur IA (chaîne parole → texte → réponse → voix)
         from nova.ai_engine import get_engine
         self._engine = get_engine()

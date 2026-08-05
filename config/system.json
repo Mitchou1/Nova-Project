@@ -28,10 +28,10 @@
     "map": {
         "provider": "local",
         "style": "basic-preview",
-        "api_key": "u7QD2QmU7L3cRPAGvtaS",
+        "api_key": "",
         "online": true,
         "local_url": "http://localhost:8080/styles/nova-streets/{z}/{x}/{y}.png",
-        "ors_key": "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImE2MTRjMzlmMDM5MTRhYzI4OWZmZTcyYjdiNmNkMTQzIiwiaCI6Im11cm11cjY0In0="
+        "ors_key": ""
     },
     "ai": {
         "whisper_model": "tiny",

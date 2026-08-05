@@ -56,8 +56,8 @@ class MapsApp(BaseApp):
         self.speed = 0.0
         self.altitude = 15.0
         self.mode = "normal"
+        self._movement_clock = None
         super().__init__(**kwargs)
-        Clock.schedule_interval(self._simulate_movement, 2.0)
         # Gestionnaire du serveur de carte local (démarre/arrête avec l'app)
         self._tileserver = None
         self._map_ready = False
@@ -305,7 +305,10 @@ class MapsApp(BaseApp):
         self.nav_info.text = text
 
     def on_enter(self, *args):
-        """À l'ouverture de Maps : démarrer le serveur de carte local si besoin."""
+        """À l'ouverture de Maps : simulation de position + serveur de carte local si besoin."""
+        if self._movement_clock is None:
+            self._movement_clock = Clock.schedule_interval(self._simulate_movement, 2.0)
+
         from nova.utils.config_loader import get_config
         provider = (get_config().get("map", {}) or {}).get("provider", "")
         if provider != "local":
@@ -339,7 +342,12 @@ class MapsApp(BaseApp):
         self._tileserver.start(on_ready=ready, on_error=failed)
 
     def on_leave(self, *args):
-        """À la sortie de Maps : arrêter le serveur (après délai de grâce)."""
+        """À la sortie de Maps : arrêter la simulation de position et le
+        serveur de carte (audit : la simulation tournait avant en continu
+        24h/24 des le demarrage, meme sur un autre ecran)."""
+        if self._movement_clock is not None:
+            self._movement_clock.cancel()
+            self._movement_clock = None
         if self._tileserver is not None:
             self._tileserver.stop()
 

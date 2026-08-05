@@ -171,8 +171,21 @@ class SensorsApp(BaseApp):
     def __init__(self, **kwargs):
         self._time_base = 0
         self._simulation_active = True
+        self._sim_clock = None
         super().__init__(**kwargs)
-        Clock.schedule_interval(self._simulate_sensors, 0.5)
+
+    def on_enter(self, *args):
+        """Demarre la simulation quand l'ecran devient visible."""
+        if self._sim_clock is None:
+            self._sim_clock = Clock.schedule_interval(self._simulate_sensors, 0.5)
+
+    def on_leave(self, *args):
+        """Arrete la simulation en quittant l'ecran (audit : tournait avant
+        en continu 24h/24 depuis le demarrage, meme app fermee — decharge
+        batterie inutile sur un wearable)."""
+        if self._sim_clock is not None:
+            self._sim_clock.cancel()
+            self._sim_clock = None
 
     def build_ui(self):
         super().build_ui()

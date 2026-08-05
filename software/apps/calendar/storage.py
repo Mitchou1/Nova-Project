@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Accès SQLite de l'agenda (séparé de l'UI pour être testable seul)."""
 
+import contextlib
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS events (
     reminder_minutes INTEGER DEFAULT 10,
     notified INTEGER DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date);
 """
 
 
@@ -28,15 +30,33 @@ def connect(db_path=None):
     return connection
 
 
+@contextlib.contextmanager
+def _session(db_path=None):
+    """Comme connect(), mais ferme reellement la connexion en sortie.
+
+    Audit : `with connect(...) as connection` ne fait QUE gerer la
+    transaction (commit/rollback) en sqlite3 — Connection.__exit__ n'appelle
+    jamais close(). due_reminders() est interroge toutes les 20s en continu
+    (main.py) : sans fermeture explicite, chaque appel accumulait un
+    descripteur de fichier jamais libere.
+    """
+    connection = connect(db_path)
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def init_db(db_path=None):
-    with connect(db_path) as connection:
+    with _session(db_path) as connection:
         connection.executescript(SCHEMA)
     return True
 
 
 def add_event(title, date, time, priority=1, description="", reminder=10, db_path=None):
     init_db(db_path)
-    with connect(db_path) as connection:
+    with _session(db_path) as connection:
         cursor = connection.execute(
             "INSERT INTO events (title, event_date, event_time, priority, "
             "description, reminder_minutes) VALUES (?, ?, ?, ?, ?, ?)",
@@ -47,7 +67,7 @@ def add_event(title, date, time, priority=1, description="", reminder=10, db_pat
 
 def get_events_for(date_str, db_path=None):
     init_db(db_path)
-    with connect(db_path) as connection:
+    with _session(db_path) as connection:
         rows = connection.execute(
             "SELECT * FROM events WHERE event_date = ? ORDER BY event_time",
             (date_str,),
@@ -60,7 +80,7 @@ def get_today_events(db_path=None):
 
 
 def delete_event(event_id, db_path=None):
-    with connect(db_path) as connection:
+    with _session(db_path) as connection:
         connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
     return True
 
@@ -73,16 +93,25 @@ def due_reminders(db_path=None):
     tolerance de 2 minutes apres l'heure de l'evenement (si l'appareil etait en
     veille au bon moment, on ne le rate pas). `notified` passe a 1 des qu'un
     evenement est renvoye : il ne redeclenche jamais.
+
+    Audit : la requete ne regardait QUE `event_date = aujourd'hui`. Un
+    evenement a 23:58 avec un rappel de 10 min a une fenetre de declenchement
+    qui commence la VEILLE (23:48) — si l'appareil verifie apres minuit,
+    "aujourd'hui" a change de valeur et l'evenement ne pouvait plus jamais
+    etre trouve, meme si `notified` valait encore 0 : rappel perdu en
+    silence. On inclut donc aussi la date d'hier ; la fenetre temporelle
+    (declenche_a / +2 min) filtre deja correctement ce qui est reellement du.
     """
     init_db(db_path)
-    today = datetime.now().strftime("%Y-%m-%d")
     now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    hier = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     due = []
-    with connect(db_path) as connection:
+    with _session(db_path) as connection:
         rows = connection.execute(
-            "SELECT * FROM events WHERE event_date = ? AND notified = 0 "
+            "SELECT * FROM events WHERE event_date IN (?, ?) AND notified = 0 "
             "ORDER BY event_time",
-            (today,),
+            (today, hier),
         ).fetchall()
         for row in rows:
             event = dict(row)

@@ -12,7 +12,10 @@ from nova import paths
 
 
 def test_paths_resolution():
-    assert paths.ROOT_DIR.name == "Nova-Project"
+    # Le nom du dossier racine depend de comment le depot a ete clone/copie
+    # (ex. "Nova-Project" via git clone, mais aussi "nova2" en local) : on
+    # verifie la structure, pas un nom de dossier fige.
+    assert paths.SOFTWARE_DIR == paths.ROOT_DIR / "software"
     assert paths.SOFTWARE_DIR.exists()
     assert paths.APPS_DIR.exists()
 

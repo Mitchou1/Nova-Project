@@ -65,26 +65,43 @@ def delete_event(event_id, db_path=None):
     return True
 
 
-def due_reminders(within_minutes=10, db_path=None):
-    """Événements dont le rappel doit être déclenché maintenant."""
+def due_reminders(db_path=None):
+    """Evenements dont le rappel doit se declencher maintenant (une seule fois).
+
+    Chaque evenement porte son propre delai (reminder_minutes) : il devient du
+    des que l'heure actuelle atteint (event_time - reminder_minutes), avec une
+    tolerance de 2 minutes apres l'heure de l'evenement (si l'appareil etait en
+    veille au bon moment, on ne le rate pas). `notified` passe a 1 des qu'un
+    evenement est renvoye : il ne redeclenche jamais.
+    """
     init_db(db_path)
+    today = datetime.now().strftime("%Y-%m-%d")
     now = datetime.now()
-    limit = (now + timedelta(minutes=within_minutes)).strftime("%H:%M")
+    due = []
     with connect(db_path) as connection:
         rows = connection.execute(
-            "SELECT * FROM events WHERE event_date = ? AND event_time <= ? "
-            "AND notified = 0 ORDER BY event_time",
-            (now.strftime("%Y-%m-%d"), limit),
+            "SELECT * FROM events WHERE event_date = ? AND notified = 0 "
+            "ORDER BY event_time",
+            (today,),
         ).fetchall()
-        events = [dict(row) for row in rows]
-        for event in events:
-            connection.execute(
-                "UPDATE events SET notified = 1 WHERE id = ?", (event["id"],))
-    return events
+        for row in rows:
+            event = dict(row)
+            try:
+                event_dt = datetime.strptime(
+                    "{} {}".format(event["event_date"], event["event_time"][:5]),
+                    "%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+            delai = event.get("reminder_minutes") or 0
+            declenche_a = event_dt - timedelta(minutes=delai)
+            if declenche_a <= now <= event_dt + timedelta(minutes=2):
+                connection.execute(
+                    "UPDATE events SET notified = 1 WHERE id = ?", (event["id"],))
+                due.append(event)
+    return due
 
 
 def next_event_label(db_path=None):
-    """Libellé du prochain événement du jour, pour l'écran d'accueil."""
     now = datetime.now()
     current = now.strftime("%H:%M")
     for event in get_today_events(db_path):

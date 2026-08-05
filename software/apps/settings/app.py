@@ -1,84 +1,462 @@
 #!/usr/bin/env python3
-"""Application Réglages."""
+"""
+App Settings NOVA — Réglages système complets
+Thèmes, infos système, mock WiFi/Bluetooth
+"""
 
+from kivy.uix.screenmanager import Screen
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.label import Label
 from kivy.uix.slider import Slider
+from kivy.uix.switch import Switch
+from kivy.clock import Clock
+from kivy.metrics import dp
+from kivy.properties import StringProperty
 
 from apps.base_app import BaseApp
-from nova import __version__
-from nova.ui.theme import THEME_LABELS, theme_manager
-from nova.utils.config_loader import get_config
-from nova.utils.platform_utils import is_raspberry_pi
+from nova.ui.theme import theme_manager
+from nova.ui.widgets import GlassCard, NeonButton
+
+
+class SettingsRow(GlassCard):
+    """Ligne de réglage — charte NOVA (Stitch).
+
+    Titre en Sora, sous-titre en label-caps (mono), contrôle à droite.
+    """
+
+    def __init__(self, title, subtitle="", widget=None, **kwargs):
+        super().__init__(
+            size_hint=(1, None),
+            height=dp(60),
+            corner_radius=dp(2),
+            **kwargs
+        )
+        from nova import fonts as _f
+
+        # Titre — Sora, en majuscules (charte : libellés « commandes »)
+        self.add_widget(Label(
+            text=title.upper(),
+            font_name=_f.FONT_DISPLAY, font_size=dp(13), bold=True,
+            color=theme_manager.get_color("text"),
+            pos_hint={'x': 0.03, 'center_y': 0.66},
+            size_hint=(0.6, 0.38),
+            halign='left', valign='middle',
+        ))
+
+        # Sous-titre — label-caps en JetBrains Mono
+        self._subtitle_label = None
+        if subtitle:
+            self._subtitle_label = Label(
+                text=subtitle.upper(),
+                font_name=_f.FONT_MONO, font_size=dp(9),
+                color=theme_manager.get_color("text_secondary"),
+                pos_hint={'x': 0.03, 'center_y': 0.28},
+                size_hint=(0.6, 0.3),
+                halign='left', valign='middle',
+            )
+            self.add_widget(self._subtitle_label)
+
+        # Widget de contrôle (switch, slider, etc.)
+        if widget:
+            widget.pos_hint = {'right': 0.97, 'center_y': 0.5}
+            widget.size_hint = (None, None)
+            self.add_widget(widget)
+
+    def set_subtitle(self, texte):
+        """Met à jour le sous-titre (ex. état de connexion)."""
+        if self._subtitle_label is not None:
+            self._subtitle_label.text = texte.upper()
+
+
+class ThemeSelector(BoxLayout):
+    """Sélecteur de thème avec aperçu des couleurs."""
+
+    def __init__(self, **kwargs):
+        super().__init__(orientation='horizontal', spacing=dp(10), **kwargs)
+        self._buttons = {}
+        self._build_themes()
+
+    # Noms lisibles des trois modes (la charte NOVA les nomme ainsi)
+    _NOMS = {"classic": "CLASSIC", "cyberpunk": "CYBER", "undercover": "DISCRET"}
+
+    def _build_themes(self):
+        from nova import fonts as _f
+        from nova.ui.theme import hex_to_rgba
+
+        for theme_key, theme_data in theme_manager.THEMES.items():
+            btn = NeonButton(
+                text=self._NOMS.get(theme_key, theme_key.upper()),
+                size_hint=(None, None),
+                size=(dp(96), dp(50)),
+                corner_radius=dp(2),
+            )
+            # BUG CORRIGE : chaque bouton affichait la couleur du theme ACTIF
+            # (donc trois rectangles identiques). Il montre desormais SA
+            # propre couleur, pour qu'on distingue les trois themes.
+            couleur = hex_to_rgba(theme_data["primary"])
+            btn.bg_color.rgba = (couleur[0], couleur[1], couleur[2], 0.22)
+            btn.border_color.rgba = couleur
+            btn.label.color = couleur
+            btn.label.font_name = _f.FONT_MONO
+            btn.bind(on_press=lambda x, tk=theme_key: self._select_theme(tk))
+            self._buttons[theme_key] = btn
+            self.add_widget(btn)
+        self._mark_active()
+
+    def _mark_active(self):
+        """Souligne le thème actuellement actif (bordure épaisse)."""
+        actif = theme_manager.current_theme
+        for cle, btn in self._buttons.items():
+            btn.border_width = 2.6 if cle == actif else 1.0
+            btn._refresh()
+
+    def _select_theme(self, theme_key):
+        theme_manager.set_theme(theme_key)
+        # Mémoriser le thème pour le prochain démarrage
+        try:
+            from nova.utils.config_loader import get_config
+            get_config().set("theme", theme_key)
+        except Exception:
+            pass
+        self._mark_active()
+        print(f"[settings] Thème changé : {theme_key}")
 
 
 class SettingsApp(BaseApp):
-    app_name = "Reglages"
-    app_icon = "⚙"
+    """Application Réglages complète."""
+
+    app_name = "Réglages"
+    app_icon = "settings"
     app_id = "settings"
+
+    def __init__(self, **kwargs):
+        # Charger les valeurs enregistrées (persistance entre sessions)
+        from nova.utils.config_loader import get_config
+        self._config = get_config()
+        audio = self._config.get("audio", {}) or {}
+        self.brightness = int(audio.get("brightness", 80))
+        self.volume = int(audio.get("volume", 60))
+        self.notifications = bool(self._config.get("notifications", True))
+        self.auto_update = bool(self._config.get("auto_update", False))
+        super().__init__(**kwargs)
 
     def build_ui(self):
         super().build_ui()
-        config = get_config()
-        audio = config.get("audio", {})
+        main = self.children[0]
 
-        self.content.add_widget(self._slider_row(
-            "Luminosite", 10, 100, audio.get("brightness", 80), self.on_brightness))
-        self.content.add_widget(self._slider_row(
-            "Volume", 0, 100, audio.get("volume", 70), self.on_volume))
-
-        theme_row = BoxLayout(size_hint_y=0.18, spacing=8)
-        theme_row.add_widget(Label(text="Theme", size_hint_x=0.3, font_size=16))
-        for label, key in THEME_LABELS.items():
-            button = Button(text=label, font_size=15, background_normal="",
-                            background_color=theme_manager.get_color("surface"))
-            button.bind(on_press=lambda _w, k=key: self.change_theme(k))
-            theme_row.add_widget(button)
-        self.content.add_widget(theme_row)
-
-        self.info = Label(
-            text=self._info_text(), font_size=13, size_hint_y=0.30,
-            color=theme_manager.get_color("text_secondary"),
+        # ScrollView pour le contenu
+        scroll = ScrollView(
+            size_hint=(0.95, 0.88),
+            pos_hint={'center_x': 0.5, 'top': 0.9}
         )
-        self.content.add_widget(self.info)
 
-    def _slider_row(self, label, minimum, maximum, value, callback):
-        row = BoxLayout(size_hint_y=0.18, spacing=8)
-        row.add_widget(Label(text=label, size_hint_x=0.3, font_size=16))
-        slider = Slider(min=minimum, max=maximum, value=value)
-        slider.bind(value=callback)
-        row.add_widget(slider)
-        self.value_labels = getattr(self, "value_labels", {})
-        value_label = Label(text="{:.0f}".format(value), size_hint_x=0.15, font_size=15)
-        self.value_labels[label] = value_label
-        row.add_widget(value_label)
-        return row
+        content = BoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            spacing=dp(12),
+            padding=dp(10)
+        )
+        content.bind(minimum_height=content.setter('height'))
 
-    def on_brightness(self, _slider, value):
-        self.value_labels["Luminosite"].text = "{:.0f}".format(value)
-        self._save_audio("brightness", int(value))
+        # ─── SECTION THÈME ─────────────────────────────────────────
+        content.add_widget(self._section_title("Apparence"))
 
-    def on_volume(self, _slider, value):
-        self.value_labels["Volume"].text = "{:.0f}".format(value)
-        self._save_audio("volume", int(value))
+        theme_card = GlassCard(
+            size_hint=(1, None),
+            height=dp(100),
+            corner_radius=dp(2)
+        )
+        theme_card.add_widget(Label(
+            text="Thème actuel : " + theme_manager.get_current_name(),
+            font_size=dp(14),
+            color=theme_manager.get_color("text"),
+            pos_hint={'x': 0.05, 'top': 0.9},
+            size_hint=(0.9, 0.3)
+        ))
 
-    def _save_audio(self, key, value):
-        config = get_config()
-        audio = dict(config.get("audio", {}))
-        audio[key] = value
-        config.set("audio", audio)
+        selector = ThemeSelector(
+            pos_hint={'center_x': 0.5, 'y': 0.1},
+            size_hint=(0.9, None),
+            height=dp(60)
+        )
+        theme_card.add_widget(selector)
+        content.add_widget(theme_card)
 
-    def change_theme(self, theme_key):
-        if theme_manager.set_theme(theme_key):
-            get_config().set("theme", theme_key)
-            self.info.text = self._info_text()
-            print("[settings] theme applique : {} (redemarrage conseille)".format(theme_key))
+        # ─── SECTION AFFICHAGE ─────────────────────────────────────
+        content.add_widget(self._section_title("Affichage"))
 
-    def _info_text(self):
-        platform = "Raspberry Pi" if is_raspberry_pi() else "PC (simulation)"
-        return "NOVA v{}\n{}\nTheme : {}".format(
-            __version__, platform, theme_manager.current_theme)
+        # Luminosité
+        brightness_slider = Slider(
+            min=10, max=100, value=self.brightness,
+            size=(dp(150), dp(40))
+        )
+        brightness_slider.bind(value=self._on_brightness)
+        content.add_widget(SettingsRow(
+            "Luminosité",
+            f"{self.brightness}%",
+            brightness_slider
+        ))
+
+        # ─── SECTION SON ───────────────────────────────────────────
+        content.add_widget(self._section_title("Son"))
+
+        volume_slider = Slider(
+            min=0, max=100, value=self.volume,
+            size=(dp(150), dp(40))
+        )
+        volume_slider.bind(value=self._on_volume)
+        content.add_widget(SettingsRow(
+            "Volume",
+            f"{self.volume}%",
+            volume_slider
+        ))
+
+        # ─── SECTION CONNECTIVITÉ (MOCK) ───────────────────────────
+        content.add_widget(self._section_title("Connectivité"))
+
+        # WiFi (mock)
+        wifi_actif = bool((self._config.get("wifi", {}) or {}).get("auto_connect", True))
+        wifi_switch = Switch(active=wifi_actif, size=(dp(50), dp(30)))
+        wifi_switch.bind(active=self._on_wifi)
+        self.wifi_row = SettingsRow(
+            "WIFI",
+            "CONNECTE — NOVA_NETWORK" if wifi_actif else "DESACTIVE",
+            wifi_switch
+        )
+        content.add_widget(self.wifi_row)
+
+        # Bluetooth
+        bt_actif = bool(self._config.get("bluetooth_enabled", False))
+        bt_switch = Switch(active=bt_actif, size=(dp(50), dp(30)))
+        bt_switch.bind(active=self._on_bluetooth)
+        self.bt_row = SettingsRow(
+            "Bluetooth",
+            "ACTIVE" if bt_actif else "DESACTIVE",
+            bt_switch
+        )
+        content.add_widget(self.bt_row)
+
+        # ─── SECTION SYSTÈME ───────────────────────────────────────
+        content.add_widget(self._section_title(" Système"))
+
+        notif_switch = Switch(active=self.notifications, size=(dp(50), dp(30)))
+        notif_switch.bind(active=self._on_notifications)
+        content.add_widget(SettingsRow(
+            "Notifications",
+            "Rappels et alertes",
+            notif_switch
+        ))
+
+        update_switch = Switch(active=self.auto_update, size=(dp(50), dp(30)))
+        update_switch.bind(active=self._on_auto_update)
+        content.add_widget(SettingsRow(
+            "Mises à jour auto",
+            "Télécharger automatiquement",
+            update_switch
+        ))
+
+        # ─── INFOS SYSTÈME ─────────────────────────────────────────
+        content.add_widget(self._section_title("ℹ Informations"))
+
+        info_card = GlassCard(
+            size_hint=(1, None),
+            height=dp(150),
+            corner_radius=dp(2)
+        )
+        infos = self._system_infos()
+        y_pos = 0.85
+        for label, value in infos:
+            info_card.add_widget(Label(
+                text=label,
+                font_size=dp(12),
+                color=theme_manager.get_color("text_secondary"),
+                pos_hint={'x': 0.05, 'top': y_pos},
+                size_hint=(0.4, 0.15),
+                halign='left'
+            ))
+            info_card.add_widget(Label(
+                text=value,
+                font_size=dp(12),
+                color=theme_manager.get_color("text"),
+                pos_hint={'right': 0.95, 'top': y_pos},
+                size_hint=(0.5, 0.15),
+                halign='right'
+            ))
+            y_pos -= 0.18
+
+        content.add_widget(info_card)
+
+        # ─── BOUTON REDÉMARRER ─────────────────────────────────────
+        restart_btn = NeonButton(
+            icon="restart_alt", text="Redemarrer NOVA",
+            size_hint=(1, None),
+            height=dp(50),
+            corner_radius=dp(2)
+        )
+        restart_btn.bind(on_press=self._restart)
+        content.add_widget(restart_btn)
+
+        scroll.add_widget(content)
+        main.add_widget(scroll)
+
+    def _system_infos(self):
+        """Infos systeme reelles (etaient codees en dur, ex. "Kivy 2.3.0" /
+        "45.2 GB / 59.5 GB" affiches quel que soit l'appareil reel)."""
+        import platform
+        import shutil
+        import sys
+
+        try:
+            import kivy
+            version_kivy = kivy.__version__
+        except Exception:
+            version_kivy = "?"
+
+        try:
+            from nova.utils.platform_utils import is_raspberry_pi
+            systeme = "Raspberry Pi OS ({})".format(platform.machine()) \
+                if is_raspberry_pi() else "{} ({})".format(platform.system(), platform.machine())
+        except Exception:
+            systeme = platform.platform()
+
+        try:
+            from nova.paths import DATA_DIR
+            usage = shutil.disk_usage(str(DATA_DIR))
+            espace = "{:.1f} Go libres / {:.1f} Go".format(
+                usage.free / 1e9, usage.total / 1e9)
+        except Exception:
+            espace = "?"
+
+        return [
+            ("Version NOVA", "v0.2.0-beta"),
+            ("Système", systeme),
+            ("Python", "{}.{}.{}".format(*sys.version_info[:3])),
+            ("Kivy", version_kivy),
+            ("Espace libre", espace),
+        ]
+
+    def _on_auto_update(self, instance, value):
+        self.auto_update = bool(value)
+        self._config.set("auto_update", bool(value))
+        print("[settings] Mises a jour auto :", "actif" if value else "inactif")
+
+    def _section_title(self, text):
+        """Crée un titre de section."""
+        return Label(
+            text=text,
+            font_size=dp(16),
+            bold=True,
+            color=theme_manager.get_color("primary"),
+            size_hint=(1, None),
+            height=dp(30),
+            halign='left'
+        )
+
+    def _on_wifi(self, instance, value):
+        """Active/desactive le WiFi (sauvegarde + action reelle sur le Pi)."""
+        wifi = dict(self._config.get("wifi", {}) or {})
+        wifi["auto_connect"] = bool(value)
+        self._config.set("wifi", wifi)
+        if hasattr(self, "wifi_row"):
+            self.wifi_row.set_subtitle(
+                "CONNECTE — NOVA_NETWORK" if value else "DESACTIVE")
+        try:
+            from nova.utils.platform_utils import is_raspberry_pi
+            if is_raspberry_pi():
+                import subprocess
+                subprocess.run(["nmcli", "radio", "wifi", "on" if value else "off"],
+                               capture_output=True, timeout=3)
+        except Exception as error:
+            print("[settings] wifi :", error)
+        print("[settings] WiFi :", "active" if value else "desactive")
+
+    def _on_bluetooth(self, instance, value):
+        """Active/desactive le Bluetooth (sauvegarde + action reelle sur le Pi)."""
+        self._config.set("bluetooth_enabled", bool(value))
+        if hasattr(self, "bt_row"):
+            self.bt_row.set_subtitle("ACTIVE" if value else "DESACTIVE")
+        try:
+            from nova.utils.platform_utils import is_raspberry_pi
+            if is_raspberry_pi():
+                import subprocess
+                subprocess.run(["bluetoothctl", "power", "on" if value else "off"],
+                               capture_output=True, timeout=3)
+        except Exception as error:
+            print("[settings] bluetooth :", error)
+        print("[settings] Bluetooth :", "active" if value else "desactive")
+
+    def _on_brightness(self, instance, value):
+        self.brightness = int(value)
+        audio = dict(self._config.get("audio", {}) or {})
+        audio["brightness"] = self.brightness
+        self._config.set("audio", audio)   # sauvegarde automatique
+        self._apply_brightness(self.brightness)
+        print(f"[settings] Luminosité : {self.brightness}%")
+
+    # Ecrans tactiles officiels Raspberry Pi les plus courants : premier
+    # chemin de backlight sysfs trouve = celui utilise.
+    _CHEMINS_BACKLIGHT = (
+        "/sys/class/backlight/rpi_backlight/brightness",
+        "/sys/class/backlight/10-0045/brightness",
+    )
+
+    def _apply_brightness(self, value):
+        """Applique la luminosite au retroeclairage reel sur le Pi (si un
+        des chemins backlight connus existe), sinon ignore proprement."""
+        try:
+            from nova.utils.platform_utils import is_raspberry_pi
+            if not is_raspberry_pi():
+                return
+            from pathlib import Path
+            for chemin in self._CHEMINS_BACKLIGHT:
+                cible = Path(chemin)
+                if not cible.exists():
+                    continue
+                max_brightness = 255
+                max_path = cible.parent / "max_brightness"
+                if max_path.exists():
+                    max_brightness = int(max_path.read_text().strip())
+                niveau = max(1, round(max_brightness * value / 100.0))
+                cible.write_text(str(niveau))
+                return
+        except Exception as error:
+            print("[settings] luminosite :", error)
+
+    def _on_volume(self, instance, value):
+        self.volume = int(value)
+        audio = dict(self._config.get("audio", {}) or {})
+        audio["volume"] = self.volume
+        self._config.set("audio", audio)   # sauvegarde automatique
+        self._apply_volume(self.volume)
+        print(f"[settings] Volume : {self.volume}%")
+
+    def _apply_volume(self, value):
+        """Applique le volume système (réel sur le Pi via amixer, sinon ignoré)."""
+        try:
+            from nova.utils.platform_utils import is_raspberry_pi
+            if is_raspberry_pi():
+                import subprocess
+                subprocess.run(["amixer", "sset", "Master", "{}%".format(value)],
+                               capture_output=True, timeout=2)
+        except Exception:
+            pass
+
+    def _on_notifications(self, instance, value):
+        self.notifications = value
+        self._config.set("notifications", bool(value))
+        print(f"[settings] Notifications : {value}")
+
+    def _restart(self, instance):
+        print("[settings] Redémarrage demandé...")
+        # Relancer proprement le processus NOVA
+        try:
+            import os, sys
+            os._exit(42)  # code 42 : un script de lancement peut relancer
+        except Exception as error:
+            print("[settings] redémarrage impossible :", error)
 
 
 NovaApp = SettingsApp

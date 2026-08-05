@@ -1,0 +1,23 @@
+{
+  "options": {
+    "paths": {
+      "root": "/data",
+      "fonts": "fonts",
+      "styles": "styles",
+      "mbtiles": "."
+    }
+  },
+  "styles": {
+    "nova-streets": {
+      "style": "style_nova.json",
+      "tilejson": {
+        "bounds": [7.513961, 30.208642, 12.127679, 37.941381]
+      }
+    }
+  },
+  "data": {
+    "tunisia": {
+      "mbtiles": "tunisia.mbtiles"
+    }
+  }
+}

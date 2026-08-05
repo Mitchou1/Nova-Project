@@ -8,7 +8,6 @@ try:
 except ImportError:
     spidev = None
 
-# Bornes de tension d'une cellule Li-Po (après pont diviseur x2)
 VOLT_EMPTY = 3.2
 VOLT_FULL = 4.2
 ADC_REF = 3.3
@@ -17,15 +16,12 @@ DIVIDER_RATIO = 2.0
 
 
 class PowerManager:
-    """Lit le niveau de batterie et expose les seuils d'économie d'énergie."""
-
     def __init__(self, low_threshold=15):
         self.low_threshold = low_threshold
         self.battery_voltage = 0.0
         self.battery_percent = 0.0
         self.spi = None
         self.simulated = True
-
         if spidev is not None and is_raspberry_pi():
             try:
                 self.spi = spidev.SpiDev()
@@ -33,23 +29,20 @@ class PowerManager:
                 self.spi.max_speed_hz = 1350000
                 self.simulated = False
             except Exception as error:
-                print("[power] MCP3008 indisponible ({}), mode simulation".format(error))
+                print("[power] MCP3008 indisponible ({}), simulation".format(error))
                 self.spi = None
 
     def read_adc(self, channel=0):
-        """Lit un canal du MCP3008 (0-1023)."""
         if self.spi is None:
             return 0
         raw = self.spi.xfer2([1, (8 + channel) << 4, 0])
         return ((raw[1] & 3) << 8) + raw[2]
 
     def get_battery_level(self):
-        """Retourne le niveau de batterie en pourcentage (0-100)."""
         if self.simulated:
             self.battery_voltage = 3.9
             self.battery_percent = 76.0
             return self.battery_percent
-
         raw = self.read_adc(0)
         voltage = (raw * ADC_REF / ADC_MAX) * DIVIDER_RATIO
         self.battery_voltage = voltage
@@ -77,3 +70,30 @@ def get_power_manager():
     if _instance is None:
         _instance = PowerManager()
     return _instance
+
+
+# ---------------------------------------------------------------------------
+# Mode economie d'energie (cahier des charges, Phase 10) : is_low_battery()
+# existait deja mais n'etait jamais interroge par personne. L'UI (animations,
+# particules) consulte ce drapeau via is_low_power_active() plutot que de
+# relire directement la batterie a chaque frame.
+# ---------------------------------------------------------------------------
+_low_power_active = False
+
+
+def is_low_power_active():
+    return _low_power_active
+
+
+def set_low_power_active(value):
+    global _low_power_active
+    _low_power_active = bool(value)
+
+
+def refresh_low_power_state():
+    """A appeler periodiquement (Clock) : met a jour le drapeau depuis la
+    batterie reelle et renvoie True si l'etat vient de changer."""
+    actif = get_power_manager().is_low_battery()
+    change = actif != _low_power_active
+    set_low_power_active(actif)
+    return change

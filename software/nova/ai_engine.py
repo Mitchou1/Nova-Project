@@ -1,167 +1,423 @@
 #!/usr/bin/env python3
-"""Moteur d'intelligence artificielle local : STT -> LLM -> TTS.
+"""Moteur de l'assistant NOVA : parole → texte → réponse → voix.
 
-  - STT : Whisper (binaire `whisper`)
-  - LLM : llama.cpp (binaire `llama-cli` ou `main`) + modèle GGUF
-  - TTS : Piper (binaire `piper`) + voix ONNX
+Trois briques indépendantes et remplaçables :
 
-Chaque brique est optionnelle : si un binaire ou un modèle manque, le moteur
-le signale au lieu de planter.
+  - SpeechToText  : audio -> texte      (Whisper plus tard)
+  - LanguageModel : texte -> réponse    (llama.cpp / TinyLlama plus tard)
+  - TextToSpeech  : texte -> voix        (Piper plus tard)
+
+Par défaut, chaque brique tourne en mode SIMULATION : elle renvoie des données
+d'exemple, sans matériel ni modèle. Cela permet de tester toute la chaîne de
+l'application (états, affichage, enchaînement) avant d'installer quoi que ce
+soit. Quand les vrais modèles seront présents, il suffit de compléter la
+méthode réelle de chaque brique — le reste de l'application ne change pas.
+
+Tout est conçu pour fonctionner HORS LIGNE : aucun appel réseau.
 """
 
-import os
-import subprocess
-import tempfile
+import random
+import time
+from pathlib import Path
 
 from nova.paths import MODELS_DIR
-from nova.utils.config_loader import get_config
-from nova.utils.platform_utils import has_command
-
-SYSTEM_PROMPT = (
-    "Tu es NOVA, un assistant personnel portable embarque. "
-    "Reponds en francais, de facon concise et utile, en 3 phrases maximum."
-)
+from nova.utils.platform_utils import is_raspberry_pi
 
 
-class NovaAI:
-    """Pipeline IA complet, 100 % local."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Brique 1 : reconnaissance vocale (Speech To Text)
+# ─────────────────────────────────────────────────────────────────────────────
+class SpeechToText:
+    """Transcrit la voix en texte avec faster-whisper (micro -> texte).
 
-    def __init__(self):
-        ai_conf = get_config().get("ai", {})
-        self.whisper_model = ai_conf.get("whisper_model", "tiny")
-        self.llm_model = MODELS_DIR / ai_conf.get("llm_model", "model.gguf")
-        self.tts_model = MODELS_DIR / ai_conf.get("tts_voice", "voice.onnx")
-        self.context = []
-        self.max_context = 5
+    Si faster-whisper n'est pas installé, retombe sur une simulation
+    (phrases d'exemple) pour ne pas bloquer le reste de l'application.
+    """
 
-    # --- diagnostics ----------------------------------------------------
-    def status(self):
-        return {
-            "stt": has_command("whisper"),
-            "llm": self.llm_model.exists() and self._llama_binary() is not None,
-            "tts": has_command("piper") and self.tts_model.exists(),
-        }
+    # Phrases d'exemple si Whisper indisponible (repli)
+    _SIMULATED = [
+        "Quelle heure est-il ?",
+        "Ajoute un rendez-vous demain à quinze heures",
+        "Quel est mon prochain événement ?",
+        "Passe en mode cyberpunk",
+    ]
 
-    def is_ready(self):
-        return all(self.status().values())
+    SAMPLE_RATE = 16000
+    RECORD_SECONDS = 5   # durée d'écoute par défaut
 
-    def missing_parts(self):
-        return [name for name, ok in self.status().items() if not ok]
+    def __init__(self, model_name="small"):
+        self.model_name = model_name
+        self.model = None
+        self.ready = False
+        self._try_load()
 
-    def _llama_binary(self):
-        for name in ("llama-cli", "main"):
-            if has_command(name):
-                return name
-        local = MODELS_DIR / "llama.cpp" / "llama-cli"
-        if local.exists():
-            return str(local)
-        return None
+    def _try_load(self):
+        """Charge le modèle Whisper si faster-whisper est disponible."""
+        try:
+            from faster_whisper import WhisperModel
+            from nova.utils.platform_utils import is_raspberry_pi
+            # modèle plus léger sur Pi pour la vitesse
+            name = "base" if is_raspberry_pi() else self.model_name
+            self.model = WhisperModel(name, device="cpu", compute_type="int8")
+            self.ready = True
+            print("[stt] Whisper chargé :", name)
+        except Exception as error:
+            print("[stt] Whisper indisponible ({}), mode simulation".format(error))
+            self.model = None
+            self.ready = False
 
-    # --- étapes du pipeline ---------------------------------------------
-    def listen(self, audio_path):
-        """Audio -> texte (Whisper)."""
-        if not has_command("whisper"):
+    def record(self, seconds=None):
+        """Enregistre depuis le micro et renvoie les échantillons audio."""
+        seconds = seconds or self.RECORD_SECONDS
+        try:
+            import sounddevice as sd
+            audio = sd.rec(int(seconds * self.SAMPLE_RATE),
+                          samplerate=self.SAMPLE_RATE, channels=1, dtype="float32")
+            sd.wait()
+            return audio.flatten()
+        except Exception as error:
+            print("[stt] enregistrement micro impossible :", error)
             return None
-        outdir = tempfile.mkdtemp(prefix="nova_stt_")
-        try:
-            subprocess.run(
-                ["whisper", str(audio_path), "--model", self.whisper_model,
-                 "--language", "fr", "--output_format", "txt",
-                 "--output_dir", outdir],
-                capture_output=True, text=True, timeout=120, check=False,
-            )
-            for name in os.listdir(outdir):
-                if name.endswith(".txt"):
-                    with open(os.path.join(outdir, name), "r", encoding="utf-8") as f:
-                        return f.read().strip()
-        except (subprocess.SubprocessError, OSError) as error:
-            print("[ai] erreur STT : {}".format(error))
-        return None
 
-    def think(self, user_input):
-        """Texte -> réponse (LLM local)."""
-        binary = self._llama_binary()
-        if binary is None or not self.llm_model.exists():
-            return "Le modele de langage n'est pas installe."
+    def transcribe(self, audio_data=None):
+        """Transcrit l'audio en texte. Si audio_data est None, enregistre d'abord.
 
-        prompt = self.build_prompt(user_input)
+        Renvoie le texte reconnu (français).
+        """
+        if self.ready and self.model is not None:
+            if audio_data is None:
+                audio_data = self.record()
+            if audio_data is None:
+                return ""
+            try:
+                segments, _info = self.model.transcribe(audio_data, language="fr")
+                text = "".join(seg.text for seg in segments).strip()
+                return text
+            except Exception as error:
+                print("[stt] transcription impossible :", error)
+                return ""
+        # Repli simulation
+        time.sleep(0.3)
+        return random.choice(self._SIMULATED)
+
+    @property
+    def simulated(self):
+        return not self.ready
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Brique 2 : génération de réponse (Language Model)
+# ─────────────────────────────────────────────────────────────────────────────
+class LanguageModel:
+    """Génère une réponse à partir d'un texte. Simulé tant que le LLM est absent.
+
+    La simulation est un peu « intelligente » : elle reconnaît quelques intentions
+    simples (heure, salutation, remerciement…) pour que la démo soit crédible,
+    et retombe sur une réponse générique sinon.
+    """
+
+    def __init__(self, model_file="qwen2.5-3b-instruct-q5_k_m.gguf"):
+        self.model_file = model_file
+        self.model = None
+        self.ready = False
+        self._try_load()
+
+    def _model_path(self):
+        return MODELS_DIR / "llm" / self.model_file
+
+    def _try_load(self):
+        path = self._model_path()
+        if not path.exists():
+            return  # simulation si le modèle n'est pas présent
         try:
-            result = subprocess.run(
-                [binary, "-m", str(self.llm_model), "-p", prompt,
-                 "-n", "150", "--temp", "0.7", "-no-cnv"],
-                capture_output=True, text=True, timeout=180, check=False,
+            from llama_cpp import Llama
+            from nova.utils.platform_utils import is_raspberry_pi
+            n_threads = 4 if is_raspberry_pi() else 8
+            self.model = Llama(
+                model_path=str(path),
+                n_ctx=2048,
+                n_threads=n_threads,
+                verbose=False,
             )
-            response = result.stdout.replace(prompt, "").strip()
-            if not response:
-                return "Je n'ai pas de reponse a donner."
-            self.context.append({"user": user_input, "assistant": response})
-            self.context = self.context[-self.max_context:]
-            return response
-        except (subprocess.SubprocessError, OSError) as error:
-            print("[ai] erreur LLM : {}".format(error))
-            return "Desole, une erreur est survenue."
+            self.ready = True
+            print("[llm] modèle chargé :", self.model_file)
+        except Exception as error:
+            print("[llm] chargement du modèle impossible : {}".format(error))
+            self.model = None
+            self.ready = False
+
+    # --- simulation d'intentions simples ---------------------------------
+    def _simulated_reply(self, text):
+        low = text.lower().strip()
+        from datetime import datetime
+
+        if any(w in low for w in ("heure", "quelle heure")):
+            return "Il est {}.".format(datetime.now().strftime("%H:%M"))
+        if any(w in low for w in ("bonjour", "salut", "coucou", "hello")):
+            return "Bonjour ! Comment puis-je vous aider ?"
+        if any(w in low for w in ("merci", "thanks")):
+            return "Avec plaisir."
+        if any(w in low for w in ("météo", "temps", "meteo")):
+            return ("Je ne peux pas encore consulter la météo hors ligne, "
+                    "mais je pourrai le faire avec le bon capteur.")
+        if any(w in low for w in ("rendez-vous", "rdv", "événement", "evenement", "agenda")):
+            return "Je peux ajouter cela à votre agenda. Quel jour et quelle heure ?"
+        if any(w in low for w in ("cyberpunk", "classic", "undercover", "mode")):
+            return "Vous pouvez changer de mode avec le bouton palette de l'accueil."
+        if "?" in text:
+            return ("Bonne question. Une fois le modèle installé, "
+                    "je pourrai y répondre vraiment.")
+        return random.choice([
+            "Je comprends. Souhaitez-vous que je note quelque chose ?",
+            "D'accord, je m'en occupe.",
+            "Entendu.",
+            "Dites m'en un peu plus.",
+        ])
+
+    def generate(self, text, on_token=None):
+        """Renvoie la réponse complète.
+
+        on_token : fonction optionnelle appelée pour chaque fragment, afin
+        d'afficher la réponse au fur et à mesure.
+        """
+        if self.ready and self.model is not None:
+            # Vraie génération avec le modèle local (format chat + streaming)
+            system = ("Tu es NOVA, un assistant personnel embarqué. "
+                      "Réponds en français, de façon concise et utile.")
+            full = ""
+            try:
+                stream = self.model.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": text},
+                    ],
+                    max_tokens=256,
+                    temperature=0.7,
+                    stream=True,
+                )
+                for chunk in stream:
+                    delta = chunk["choices"][0].get("delta", {})
+                    piece = delta.get("content", "")
+                    if piece:
+                        full += piece
+                        if on_token:
+                            on_token(piece)
+                return full.strip()
+            except Exception as error:
+                print("[llm] erreur de génération :", error)
+                # bascule sur la simulation en cas de souci
+        # Simulation : on « tape » la réponse mot à mot pour l'effet
+        reply = self._simulated_reply(text)
+        if on_token:
+            for word in reply.split(" "):
+                on_token(word + " ")
+                time.sleep(0.04)
+        return reply
+
+    @property
+    def simulated(self):
+        return not self.ready
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Brique 3 : synthèse vocale (Text To Speech)
+# ─────────────────────────────────────────────────────────────────────────────
+class TextToSpeech:
+    """Lit un texte à voix haute avec Piper (synthèse vocale hors ligne).
+
+    Si Piper ou la voix ne sont pas là, reste en simulation (silencieux)
+    sans bloquer le reste de l'application.
+    """
+
+    def __init__(self, voice="fr_FR-siwis-medium.onnx"):
+        self.voice = voice
+        self.voice_model = None
+        self.ready = False
+        self._try_load()
+
+    def _voice_path(self):
+        return MODELS_DIR / "tts" / self.voice
+
+    def _try_load(self):
+        path = self._voice_path()
+        if not path.exists():
+            return  # simulation : voix non téléchargée
+        try:
+            from piper import PiperVoice
+            self.voice_model = PiperVoice.load(str(path))
+            self.ready = True
+            print("[tts] voix chargée :", self.voice)
+        except Exception as error:
+            print("[tts] chargement de la voix impossible :", error)
+            self.voice_model = None
+            self.ready = False
 
     def speak(self, text):
-        """Texte -> parole (Piper + aplay)."""
-        if not has_command("piper") or not self.tts_model.exists():
-            print("[ai] TTS indisponible : {}".format(text))
-            return False
-        output = os.path.join(tempfile.gettempdir(), "nova_tts.wav")
-        try:
-            subprocess.run(
-                ["piper", "--model", str(self.tts_model), "--output_file", output],
-                input=text, text=True, timeout=60, check=False,
-            )
-            if has_command("aplay"):
-                subprocess.run(["aplay", "-q", output], timeout=60, check=False)
-            return True
-        except (subprocess.SubprocessError, OSError) as error:
-            print("[ai] erreur TTS : {}".format(error))
-            return False
+        """Prononce le texte à voix haute via Piper."""
+        if self.ready and self.voice_model is not None and text.strip():
+            try:
+                import sounddevice as sd
+                import numpy as np
+                chunks = []
+                for chunk in self.voice_model.synthesize(text):
+                    chunks.append(chunk.audio_int16_array)
+                if chunks:
+                    audio = np.concatenate(chunks)
+                    sd.play(audio, samplerate=self.voice_model.config.sample_rate)
+                    sd.wait()
+                return True
+            except Exception as error:
+                print("[tts] synthèse vocale impossible :", error)
+                return False
+        # Simulation (silencieux, le texte reste affiché à l'écran)
+        print("[tts] (simulation) prononce :", text[:60])
+        return False
 
-    # --- helpers ---------------------------------------------------------
-    def build_prompt(self, user_input):
-        history = ""
-        for turn in self.context:
-            history += "Utilisateur : {}\nNOVA : {}\n".format(turn["user"], turn["assistant"])
-        return "{}\n{}Utilisateur : {}\nNOVA : ".format(SYSTEM_PROMPT, history, user_input)
-
-    def reset_context(self):
-        self.context = []
-
-    def route(self, text):
-        """Détermine si la phrase relève d'une app plutôt que du LLM."""
-        lowered = text.lower()
-        calendar_kw = ("rappelle", "rendez-vous", "rendez vous", "evenement",
-                       "événement", "rappel", "agenda", "calendrier")
-        settings_kw = ("volume", "luminosite", "luminosité", "theme", "thème", "reglage", "réglage")
-        if any(word in lowered for word in calendar_kw):
-            return "calendar"
-        if any(word in lowered for word in settings_kw):
-            return "settings"
-        return "chat"
-
-    def process_audio(self, audio_path):
-        """Pipeline complet : écoute -> comprend -> répond -> parle."""
-        text = self.listen(audio_path)
-        if not text:
-            self.speak("Je n'ai pas compris, peux-tu repeter ?")
-            return {"action": "error", "text": "", "response": "Non compris"}
-
-        action = self.route(text)
-        if action != "chat":
-            return {"action": action, "text": text, "response": ""}
-
-        response = self.think(text)
-        self.speak(response)
-        return {"action": "chat", "text": text, "response": response}
+    @property
+    def simulated(self):
+        return not self.ready
 
 
-_instance = None
+# ─────────────────────────────────────────────────────────────────────────────
+# Assemblage : la chaîne complète
+# ─────────────────────────────────────────────────────────────────────────────
+class AssistantEngine:
+    """Chaîne parole → texte → réponse → voix, avec briques remplaçables."""
+
+    # Paires utilisateur/assistant conservées dans l'historique (n_ctx=2048
+    # limite la fenêtre : au-delà, les tours les plus anciens sont oubliés).
+    MAX_HISTORY_TURNS = 6
+
+    def __init__(self):
+        self.stt = SpeechToText()
+        self.llm = LanguageModel()
+        self.tts = TextToSpeech()
+        self.history = []  # [{"role": "user"|"assistant", "content": str}, ...]
+
+    def _remember(self, role, content):
+        self.history.append({"role": role, "content": content})
+        limite = self.MAX_HISTORY_TURNS * 2
+        if len(self.history) > limite:
+            self.history = self.history[-limite:]
+
+    def reset_conversation(self):
+        """Efface l'historique (ex. bouton « nouvelle conversation »)."""
+        self.history = []
+
+    def status(self):
+        """Décrit l'état des trois briques (réel ou simulé)."""
+        return {
+            "stt": "réel" if not self.stt.simulated else "simulation",
+            "llm": "réel" if not self.llm.simulated else "simulation",
+            "tts": "réel" if not self.tts.simulated else "simulation",
+        }
+
+    def fully_simulated(self):
+        return self.stt.simulated and self.llm.simulated and self.tts.simulated
+
+    def transcribe(self, audio_data=None):
+        return self.stt.transcribe(audio_data)
+
+    def respond(self, text, on_token=None, app=None):
+        """Génère une réponse. Si le LLM produit une commande d'action, elle est
+        exécutée et la confirmation est renvoyée ; sinon, réponse en texte.
+
+        app : référence à l'application NOVA (pour agir sur agenda, navigation…).
+
+        Diffuse la réponse token par token dès que possible (vrai streaming
+        llama.cpp) : une réponse en texte libre s'affiche donc au fur et à
+        mesure de sa génération. Une commande d'action (le premier caractère
+        non-blanc est "{") reste muette tant qu'elle n'est pas complète, pour
+        ne jamais afficher de JSON brut à l'écran.
+
+        Un chemin rapide (sans LLM) traite d'abord les commandes courtes et
+        non-ambiguës (ouvrir une app, changer de mode/thème, heure, aide...) :
+        réponse instantanée et fiable à 100 %, sans attendre le modèle.
+        """
+        from nova import assistant_actions as actions
+
+        rapide = actions.try_fast_path(text)
+        if rapide is not None:
+            confirmation = actions.execute_action(rapide, app=app)
+            if confirmation:
+                if on_token:
+                    for word in confirmation.split(" "):
+                        on_token(word + " ")
+                        time.sleep(0.02)
+                self._remember("user", text)
+                self._remember("assistant", confirmation)
+                return confirmation
+
+        if self.llm.ready and self.llm.model is not None:
+            system = actions.build_system_prompt()
+            messages = [{"role": "system", "content": system}]
+            messages.extend(self.history)
+            messages.append({"role": "user", "content": text})
+
+            raw = ""
+            first_char = None
+            try:
+                stream = self.llm.model.create_chat_completion(
+                    messages=messages,
+                    max_tokens=256,
+                    temperature=0.4,  # plus bas = plus fiable pour le JSON
+                    stream=True,
+                )
+                for chunk in stream:
+                    delta = chunk["choices"][0].get("delta", {})
+                    piece = delta.get("content", "")
+                    if not piece:
+                        continue
+                    raw += piece
+                    if first_char is None:
+                        stripped = raw.lstrip()
+                        if stripped:
+                            first_char = stripped[0]
+                    if first_char is not None and first_char != "{" and on_token:
+                        on_token(piece)
+            except Exception as error:
+                print("[llm] erreur de génération :", error)
+                raw = ""
+            raw = raw.strip()
+
+            reply = None
+            data = actions.extract_json(raw)
+            if data is not None:
+                confirmation = actions.execute_action(data, app=app)
+                if confirmation:
+                    reply = confirmation
+                    # Muette pendant le streaming (JSON) : "tapee" a la fin.
+                    if on_token:
+                        for word in confirmation.split(" "):
+                            on_token(word + " ")
+                            time.sleep(0.02)
+            if reply is None and raw:
+                reply = raw
+                if first_char == "{" and on_token:
+                    # Ressemblait a une action mais JSON invalide/sans
+                    # confirmation : jamais diffusee plus haut, on la montre.
+                    for word in raw.split(" "):
+                        on_token(word + " ")
+                        time.sleep(0.02)
+
+            if reply:
+                self._remember("user", text)
+                self._remember("assistant", reply)
+                return reply
+
+        # Repli : pas de vrai LLM -> simulation (pas de memoire, cas degrade)
+        return self.llm.generate(text, on_token=on_token)
+
+    def say(self, text):
+        return self.tts.speak(text)
 
 
-def get_ai():
-    global _instance
-    if _instance is None:
-        _instance = NovaAI()
-    return _instance
+_engine = None
+
+
+def get_engine():
+    """Instance partagée du moteur (chargée une seule fois)."""
+    global _engine
+    if _engine is None:
+        _engine = AssistantEngine()
+    return _engine

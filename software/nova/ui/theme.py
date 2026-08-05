@@ -152,84 +152,71 @@ REQUIRED_KEYS = frozenset({
 })
 
 THEMES = {
-    "nova_dark": {
-        "primary": "#3B82F6",
-        "secondary": "#8B5CF6",
-        "accent": "#06B6D4",
-        "background": "#0A0A0F",
-        "surface": "#14141F",
-        "surface_light": "#1E1E2E",
-        "text_primary": "#FFFFFF",
-        "text_secondary": "#9CA3AF",
-        "success": "#22C55E",
-        "warning": "#F59E0B",
-        "error": "#EF4444",
-        "glass": "rgba(255, 255, 255, 0.06)",
-        "glass_border": "rgba(255, 255, 255, 0.14)",
-        "gradient_start": "#3B82F6",
-        "gradient_end": "#8B5CF6",
+    # --- Classic : glassmorphism turquoise (mode par defaut) ---------------
+    "classic": {
+        "primary": "#00F0FF",
+        "secondary": "#7DF4FF",
+        "accent": "#00DBE9",
+        "background": "#0E1416",
+        "surface": "#131313",
+        "surface_light": "#1F1F1F",
+        "text_primary": "#E2E2E2",
+        "text_secondary": "#B9CACB",
+        "success": "#00F0FF",
+        "warning": "#FED639",
+        "error": "#FF5449",
+        # Charte Stitch (classic-blue #002B36) : base "verre" teintee bleu
+        # nuit, pas teal — le teal reste reserve a l'accent primary.
+        "glass": "rgba(0, 43, 54, 0.55)",
+        "glass_border": "rgba(255, 255, 255, 0.12)",
+        "gradient_start": "#00F0FF",
+        "gradient_end": "#00363A",
     },
-    "nova_amber": {
-        "primary": "#F59E0B",
-        "secondary": "#B45309",
-        "accent": "#FCD34D",
-        "background": "#0F0A05",
-        "surface": "#1C1408",
-        "surface_light": "#2A1F0F",
-        "text_primary": "#FFF7ED",
-        "text_secondary": "#C9A87C",
-        "success": "#84CC16",
-        "warning": "#FB923C",
-        "error": "#DC2626",
-        "glass": "rgba(245, 158, 11, 0.08)",
-        "glass_border": "rgba(252, 211, 77, 0.22)",
-        "gradient_start": "#F59E0B",
-        "gradient_end": "#7C2D12",
+    # --- Cyberpunk : neon jaune/rose sur noir pur --------------------------
+    "cyberpunk": {
+        "primary": "#FCEE09",
+        "secondary": "#00F0FF",
+        "accent": "#FF003C",
+        "background": "#000000",
+        "surface": "#0A0A0A",
+        "surface_light": "#141414",
+        "text_primary": "#FCEE09",
+        "text_secondary": "#00F0FF",
+        "success": "#00F0FF",
+        "warning": "#FCEE09",
+        "error": "#FF003C",
+        "glass": "rgba(252, 238, 9, 0.05)",
+        "glass_border": "rgba(252, 238, 9, 0.55)",
+        "gradient_start": "#FCEE09",
+        "gradient_end": "#FF003C",
     },
-    "nova_ocean": {
-        "primary": "#14B8A6",
-        "secondary": "#0EA5E9",
-        "accent": "#2DD4BF",
-        "background": "#04121A",
-        "surface": "#0A1E2B",
-        "surface_light": "#123141",
-        "text_primary": "#ECFEFF",
-        "text_secondary": "#7DA6B8",
-        "success": "#10B981",
-        "warning": "#FBBF24",
-        "error": "#F43F5E",
-        "glass": "rgba(20, 184, 166, 0.08)",
-        "glass_border": "rgba(45, 212, 191, 0.20)",
-        "gradient_start": "#0EA5E9",
-        "gradient_end": "#14B8A6",
-    },
-    "nova_purple": {
-        "primary": "#A855F7",
-        "secondary": "#6366F1",
-        "accent": "#EC4899",
-        "background": "#0B0614",
-        "surface": "#170F24",
-        "surface_light": "#241634",
-        "text_primary": "#F5F3FF",
-        "text_secondary": "#A99BC4",
-        "success": "#34D399",
-        "warning": "#FBBF24",
-        "error": "#FB7185",
-        "glass": "rgba(168, 85, 247, 0.09)",
-        "glass_border": "rgba(236, 72, 153, 0.22)",
-        "gradient_start": "#A855F7",
-        "gradient_end": "#EC4899",
+    # --- Undercover : terminal monochrome discret --------------------------
+    "undercover": {
+        "primary": "#888888",
+        "secondary": "#AAAAAA",
+        "accent": "#666666",
+        "background": "#0A0A0A",
+        "surface": "#1A1A1A",
+        "surface_light": "#242424",
+        "text_primary": "#B0B0B0",
+        "text_secondary": "#888888",
+        "success": "#8A8A8A",
+        "warning": "#9A9A9A",
+        "error": "#AAAAAA",
+        "glass": "rgba(255, 255, 255, 0.02)",
+        "glass_border": "rgba(136, 136, 136, 0.45)",
+        "gradient_start": "#888888",
+        "gradient_end": "#333333",
     },
 }
 
-DEFAULT_THEME = "nova_dark"
+DEFAULT_THEME = "classic"
 
 # Libellés affichés dans l'application Réglages
 THEME_LABELS = {
-    "Nuit": "nova_dark",
-    "Ambre": "nova_amber",
-    "Ocean": "nova_ocean",
-    "Violet": "nova_purple",
+    "Classic": "classic",
+    "Cyberpunk": "cyberpunk",
+    "Undercover": "undercover",
 }
 
 
@@ -325,9 +312,12 @@ theme = NovaTheme()
 # la migration. À supprimer une fois tous les appels passés à `theme`.
 LEGACY_KEY_ALIASES = {"text": "text_primary"}
 LEGACY_THEME_ALIASES = {
-    "dark": "nova_dark",
-    "light": "nova_ocean",
-    "cyberpunk": "nova_purple",
+    "dark": "classic",
+    "nova_dark": "classic",
+    "light": "classic",
+    "nova_ocean": "classic",
+    "nova_amber": "cyberpunk",
+    "nova_purple": "undercover",
 }
 
 THEME_NAMES = list(THEMES)
@@ -352,11 +342,36 @@ class ThemeManager(object):
         resolved = LEGACY_THEME_ALIASES.get(theme_name, theme_name)
         return self._theme.set_theme(resolved)
 
+    @property
+    def THEMES(self):
+        labels = {v: k for k, v in THEME_LABELS.items()}
+        enriched = {}
+        for name, palette in THEMES.items():
+            entry = dict(palette)
+            entry["name"] = labels.get(name, name)
+            enriched[name] = entry
+        return enriched
+
     def get_color(self, color_name):
         key = LEGACY_KEY_ALIASES.get(color_name, color_name)
         if key not in self._theme.palette:
             return (1.0, 1.0, 1.0, 1.0)
         return self._theme.get_rgba(key)
+
+    def get_with_alpha(self, color_name, alpha=1.0):
+        """Couleur du thème en RGBA avec opacité imposée."""
+        key = LEGACY_KEY_ALIASES.get(color_name, color_name)
+        return self._theme.get_rgba(key, alpha)
+
+    def get_hex(self, color_name):
+        """Valeur brute (#RRGGBB) de la clé demandée."""
+        key = LEGACY_KEY_ALIASES.get(color_name, color_name)
+        return self._theme.get_color(key)
+
+    def get_current_name(self):
+        """Libellé lisible du thème actif (ex. 'Classic')."""
+        labels = {v: k for k, v in THEME_LABELS.items()}
+        return labels.get(self._theme.name, self._theme.name)
 
     def on_change(self, callback):
         """Ancien système d'abonnement, redirigé vers l'événement Kivy."""

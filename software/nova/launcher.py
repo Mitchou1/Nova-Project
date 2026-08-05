@@ -1,103 +1,96 @@
 #!/usr/bin/env python3
-"""Découverte et chargement dynamique des applications (plugins)."""
+"""
+Gestionnaire d'applications (plugins)
+"""
 
-import importlib
+import os
 import sys
-import traceback
+import importlib.util
+from pathlib import Path
 
-from nova.paths import APPS_DIR, SOFTWARE_DIR
-
+APPS_DIR = Path(__file__).parent.parent / "apps"
 
 class AppLauncher:
-    """Scanne software/apps/ et instancie chaque application trouvée."""
+    """Charge et gère les applications dynamiquement"""
 
     def __init__(self, screen_manager):
         self.sm = screen_manager
         self.loaded_apps = {}
-        if str(SOFTWARE_DIR) not in sys.path:
-            sys.path.insert(0, str(SOFTWARE_DIR))
+        self.discover_apps()
 
     def discover_apps(self):
-        """Retourne la liste des dossiers d'applications valides."""
-        found = []
+        """Scanne le dossier /apps et détecte les applications"""
         if not APPS_DIR.exists():
-            print("[launcher] dossier introuvable : {}".format(APPS_DIR))
-            return found
+            print(f"⚠️ Dossier apps non trouvé: {APPS_DIR}")
+            return
 
-        for folder in sorted(APPS_DIR.iterdir()):
-            if not folder.is_dir():
-                continue
-            if folder.name.startswith(("_", ".")):
-                continue
-            if (folder / "app.py").exists():
-                found.append(folder.name)
-        return found
+        for app_folder in sorted(APPS_DIR.iterdir()):
+            if app_folder.is_dir() and not app_folder.name.startswith('_'):
+                app_file = app_folder / "app.py"
+                if app_file.exists():
+                    self.load_app(app_folder.name, app_file)
 
-    def load_app(self, app_name):
-        """Importe apps.<app_name>.app et ajoute l'écran au ScreenManager."""
+    def load_app(self, app_name, app_path):
+        """Charge dynamiquement une application"""
         try:
-            module = importlib.import_module("apps.{}.app".format(app_name))
-        except Exception:
-            print("[launcher] import impossible : {}".format(app_name))
-            traceback.print_exc()
-            return False
+            spec = importlib.util.spec_from_file_location(
+                f"apps.{app_name}", app_path
+            )
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[f"apps.{app_name}"] = module
+            spec.loader.exec_module(module)
 
-        app_class = getattr(module, "NovaApp", None)
-        if app_class is None:
-            print("[launcher] {} : classe NovaApp absente".format(app_name))
-            return False
+            if hasattr(module, 'NovaApp'):
+                app_class = module.NovaApp
+                # Instancier et ajouter au screen manager
+                app_instance = app_class()
+                self.sm.add_widget(app_instance)
+                self.loaded_apps[app_name] = {
+                    'class': app_class,
+                    'instance': app_instance,
+                    'name': getattr(app_class, 'app_id', app_name),
+                    'display_name': getattr(app_class, 'app_name', app_name),
+                    'icon': getattr(app_class, 'app_icon', '📱')
+                }
+                print(f"✅ App chargée : {app_name}")
+            else:
+                print(f"⚠️  {app_name} : pas de classe NovaApp trouvée")
 
-        try:
-            instance = app_class()
-            self.sm.add_widget(instance)
-        except Exception:
-            print("[launcher] instanciation impossible : {}".format(app_name))
-            traceback.print_exc()
-            return False
-
-        self.loaded_apps[app_name] = {
-            "class": app_class,
-            "instance": instance,
-            "screen": getattr(app_class, "app_id", app_name),
-            "display_name": getattr(app_class, "app_name", app_name),
-            "icon": getattr(app_class, "app_icon", "•"),
-        }
-        print("[launcher] app chargee : {}".format(app_name))
-        return True
+        except Exception as e:
+            print(f"❌ Erreur chargement {app_name} : {e}")
 
     def load_all_apps(self):
-        """Charge toutes les applications découvertes, retourne le total."""
-        for name in self.discover_apps():
-            self.load_app(name)
+        """Toutes les apps sont deja chargees par discover_apps() ; renvoie
+        leur nombre (main.py l'affiche au demarrage)."""
         return len(self.loaded_apps)
 
     def get_app(self, app_name):
+        """Retourne les infos d'une application"""
         return self.loaded_apps.get(app_name)
 
     def list_apps(self):
-        return list(self.loaded_apps)
+        """Liste toutes les apps disponibles"""
+        return list(self.loaded_apps.keys())
 
     def get_app_info(self):
-        """Infos d'affichage pour la grille de l'écran d'accueil."""
+        """Retourne les infos de toutes les apps pour l'affichage"""
         return [
-            {"id": name, "name": info["display_name"], "icon": info["icon"]}
+            {
+                'id': name,
+                'name': info['display_name'],
+                'icon': info['icon']
+            }
             for name, info in self.loaded_apps.items()
         ]
 
     def launch_app(self, app_name):
-        info = self.loaded_apps.get(app_name)
-        if info is None:
-            print("[launcher] app inconnue : {}".format(app_name))
-            return False
-        self.sm.current = info["screen"]
-        return True
+        """Lance une application par son ID"""
+        if app_name in self.loaded_apps:
+            app_id = self.loaded_apps[app_name]['name']
+            self.sm.current = app_id
+            return True
+        return False
 
     def cleanup(self):
-        """Appelle on_cleanup() sur chaque app qui l'implémente."""
-        for name, info in self.loaded_apps.items():
-            hook = getattr(info["instance"], "on_cleanup", None)
-            if callable(hook):
-                try:
-                    hook()
-                except Exception as error:
-                    print("[launcher] cleanup {} : {}".format(name, error))
+        """Nettoyage à l'arrêt"""
+        pass

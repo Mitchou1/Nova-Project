@@ -1,17 +1,24 @@
-# --- Dépendances multiplateformes (PC de dev + Raspberry Pi) ---
-
 # Interface graphique
-kivy[base]>=2.3.1
+kivy[base]==2.3.0
 
-# Calcul / images
-numpy>=1.26
-Pillow>=10.2.0
+# IA embarquee (STT, LLM, TTS) — hors ligne
+llama-cpp-python==0.3.34
+faster-whisper==1.2.1
+piper-tts==1.6.0
+sounddevice==0.5.1
+numpy==1.26.4
 
-# Planification (rappels, tâches périodiques)
-APScheduler>=3.10.4
+# Capteurs & GPIO (Raspberry Pi uniquement — absents sur PC de dev)
+RPi.GPIO==0.7.1; platform_machine == "armv7l" or platform_machine == "aarch64"
+smbus2==0.4.2
+spidev==3.6
 
-# Réseau (tuiles cartes, mises à jour)
-requests>=2.31.0
+# GPS
+gps==3.19
+
+# Utilitaires
+requests==2.31.0
+Pillow==10.2.0
 
 # Tests
-pytest>=8.0.0
+pytest==8.0.0

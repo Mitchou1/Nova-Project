@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Détection de la plateforme d'exécution."""
+"""Détection de la plateforme d'exécution et état des interfaces sans fil."""
 
+import glob
+import os
 import shutil
 from pathlib import Path
 
@@ -8,10 +10,8 @@ _cache = {}
 
 
 def is_raspberry_pi():
-    """True si le code tourne sur un Raspberry Pi."""
     if "is_pi" in _cache:
         return _cache["is_pi"]
-
     result = False
     for candidate in ("/proc/device-tree/model", "/proc/cpuinfo"):
         try:
@@ -21,16 +21,43 @@ def is_raspberry_pi():
         if "raspberry pi" in text:
             result = True
             break
-
     _cache["is_pi"] = result
     return result
 
 
 def has_command(name):
-    """True si une commande externe est disponible dans le PATH."""
     return shutil.which(name) is not None
 
 
 def simulation_mode():
-    """True lorsqu'aucun matériel réel n'est disponible (PC de dev)."""
     return not is_raspberry_pi()
+
+
+def wifi_state():
+    """Retourne "up", "down" ou "none" selon l'état des interfaces sans fil."""
+    interfaces = glob.glob("/sys/class/net/wl*")
+    if not interfaces:
+        return "none"
+    for interface in interfaces:
+        try:
+            with open(os.path.join(interface, "operstate"), "r") as handle:
+                if handle.read().strip() == "up":
+                    return "up"
+        except OSError:
+            continue
+    return "down"
+
+
+def bluetooth_state():
+    """Retourne "up", "down" ou "none" selon les contrôleurs Bluetooth."""
+    controllers = glob.glob("/sys/class/bluetooth/hci*")
+    if not controllers:
+        return "none"
+    for controller in controllers:
+        try:
+            with open(os.path.join(controller, "rfkill*/state"), "r") as handle:
+                handle.read()
+        except (OSError, IOError):
+            pass
+        return "up"
+    return "down"

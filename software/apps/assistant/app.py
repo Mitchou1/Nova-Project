@@ -120,11 +120,12 @@ class AssistantApp(BaseApp):
     status_text = StringProperty("Appuyez et parlez")
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
         # Historique conversation (audit : etait un attribut de CLASSE,
         # partage entre toutes les instances au lieu d'etre propre a
-        # chacune — piege classique du mutable default applique a un
-        # attribut de classe).
+        # chacune). Doit etre pose AVANT super().__init__() : BaseApp.__init__
+        # appelle self.build_ui(), qui affiche le message de bienvenue via
+        # _add_message(), qui lit self.conversation — sinon AttributeError
+        # des la construction de l'ecran (bug reel observe au lancement).
         self.conversation = []
         # Moteur IA : chargement PARESSEUX (audit, severite HAUTE) — charger
         # Whisper + le LLM (~2,4 Go) + Piper de facon synchrone ici figeait
@@ -136,6 +137,7 @@ class AssistantApp(BaseApp):
         # separe, jamais sur le thread UI.
         self._engine = None
         self._last_audio = None
+        super().__init__(**kwargs)
 
     def _get_engine(self):
         """Charge le moteur IA au premier appel reel (voir __init__)."""

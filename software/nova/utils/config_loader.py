@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Chargement et sauvegarde de la configuration système."""
+
+import json
+
+from nova.paths import SYSTEM_CONFIG
+
+DEFAULT_CONFIG = {
+    "device_name": "NOVA",
+    "version": "0.1.0",
+    "screen": {"width": 800, "height": 480, "rotation": 0},
+    "theme": "nova_dark",
+    "language": "fr",
+    "wifi": {"auto_connect": True},
+    "power": {"low_battery_threshold": 15, "auto_sleep_minutes": 5},
+    "audio": {"volume": 70, "brightness": 80},
+    "ui": {"particles": "auto", "waveform": "auto", "animations": "auto", "transition": "auto"},
+    "map": {
+        "provider": "maptiler",
+        "style": "streets-v2-dark",
+        "api_key": "",
+        "online": True,
+    },
+    "ai": {
+        "whisper_model": "tiny",
+        "llm_model": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+        "tts_voice": "fr_FR-siwis-medium.onnx",
+    },
+}
+
+
+def _merge(defaults, loaded):
+    result = dict(defaults)
+    for key, value in loaded.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+class ConfigLoader:
+    def __init__(self, config_path=None):
+        self.config_path = config_path or SYSTEM_CONFIG
+        self.config = self.load()
+
+    def load(self):
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as handle:
+                return _merge(DEFAULT_CONFIG, json.load(handle))
+        except (OSError, ValueError) as error:
+            print("[config] lecture impossible ({}), valeurs par defaut".format(error))
+            return dict(DEFAULT_CONFIG)
+
+    def get(self, key, default=None):
+        return self.config.get(key, default)
+
+    def set(self, key, value, save=True):
+        self.config[key] = value
+        if save:
+            self.save()
+
+    def save(self):
+        try:
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.config_path, "w", encoding="utf-8") as handle:
+                json.dump(self.config, handle, indent=4, ensure_ascii=False)
+            return True
+        except OSError as error:
+            print("[config] sauvegarde impossible : {}".format(error))
+            return False
+
+
+_instance = None
+
+
+def get_config():
+    global _instance
+    if _instance is None:
+        _instance = ConfigLoader()
+    return _instance

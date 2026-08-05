@@ -1,0 +1,42 @@
+{
+    "device_name": "NOVA",
+    "version": "0.1.0",
+    "screen": {
+        "width": 800,
+        "height": 480,
+        "rotation": 0
+    },
+    "theme": "undercover",
+    "language": "fr",
+    "wifi": {
+        "auto_connect": true
+    },
+    "power": {
+        "low_battery_threshold": 15,
+        "auto_sleep_minutes": 5
+    },
+    "audio": {
+        "volume": 29,
+        "brightness": 97
+    },
+    "ui": {
+        "particles": "auto",
+        "waveform": "auto",
+        "animations": "auto",
+        "transition": "auto"
+    },
+    "map": {
+        "provider": "local",
+        "style": "basic-preview",
+        "api_key": "u7QD2QmU7L3cRPAGvtaS",
+        "online": true,
+        "local_url": "http://localhost:8080/styles/nova-streets/{z}/{x}/{y}.png",
+        "ors_key": "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImE2MTRjMzlmMDM5MTRhYzI4OWZmZTcyYjdiNmNkMTQzIiwiaCI6Im11cm11cjY0In0="
+    },
+    "ai": {
+        "whisper_model": "tiny",
+        "llm_model": "qwen2.5-3b-instruct-q5_k_m.gguf",
+        "tts_voice": "fr_FR-siwis-medium.onnx"
+    },
+    "bluetooth_enabled": true
+}

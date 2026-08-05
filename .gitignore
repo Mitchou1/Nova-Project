@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# Données sensibles/lourdes
+models/**/*.gguf
+models/**/*.onnx
+data/*.db
+data/map_tiles/*
+data/logs/*
+data/photos/*
+data/enregistrements/*
+data/bluetooth/*
+data/documents/*
+!data/map_tiles/.gitkeep
+!data/logs/.gitkeep
+!data/photos/.gitkeep
+!data/enregistrements/.gitkeep
+!data/bluetooth/.gitkeep
+!data/documents/.gitkeep
+
+# Cartographie et routage (données volumineuses régénérables)
+maps_data/*.mbtiles
+maps_data/*.osm.pbf
+valhalla_data/
+photon_data/
+software/*.zip
+software.zip
+
+# Cache Piper/whisper
+models/llm/.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

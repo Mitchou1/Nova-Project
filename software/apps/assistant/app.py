@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-App Assistant NOVA — Interface IA vocale (mock/simulation)
-Prête pour intégration Whisper + LLM + Piper
+App Assistant NOVA — Interface IA vocale.
+Pipeline reel : Whisper (faster-whisper) -> Qwen2.5 (llama.cpp) -> Piper.
 """
 
-from kivy.uix.screenmanager import Screen
-from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 from kivy.uix.scrollview import ScrollView
-from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.animation import Animation
 from kivy.properties import StringProperty, BooleanProperty
-import random
 
 from apps.base_app import BaseApp
 from nova.ui.theme import theme_manager
@@ -367,41 +363,5 @@ class AssistantApp(BaseApp):
             label.text = text
         except Exception:
             pass
-
-    def _simulate_response(self, dt):
-        """Simule une réponse de l'IA (à remplacer par vrai pipeline)."""
-        import random
-
-        # Réponses mock
-        responses = [
-            "Je comprends. Souhaitez-vous que je note quelque chose ?",
-            "D'accord, je vais m'en occuper.",
-            "C'est noté dans votre calendrier.",
-            "La météo à Tunis est ensoleillée, 32°C aujourd'hui.",
-            "Votre prochain rendez-vous est dans 30 minutes.",
-            "Je peux vous aider à naviguer vers cette destination.",
-            "Souhaitez-vous que je règle un rappel ?",
-        ]
-
-        response = random.choice(responses)
-
-        self._add_message(response, is_user=False)
-
-        self.status_text = "Appuyez et parlez"
-        self.status_label.text = self.status_text
-        self.status_label.color = theme_manager.get_color("text_secondary")
-
-        print(f"[assistant] Reponse : {response}")
-
-    def process_voice_command(self, audio_data):
-        """
-        À implémenter : pipeline complet STT → LLM → TTS
-
-        1. Whisper.transcribe(audio_data) → texte
-        2. llama.cpp.generate(prompt) → réponse
-        3. Piper.synthesize(response) → audio
-        """
-        pass
-
 
 NovaApp = AssistantApp

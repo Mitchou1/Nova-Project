@@ -70,3 +70,30 @@ def get_power_manager():
     if _instance is None:
         _instance = PowerManager()
     return _instance
+
+
+# ---------------------------------------------------------------------------
+# Mode economie d'energie (cahier des charges, Phase 10) : is_low_battery()
+# existait deja mais n'etait jamais interroge par personne. L'UI (animations,
+# particules) consulte ce drapeau via is_low_power_active() plutot que de
+# relire directement la batterie a chaque frame.
+# ---------------------------------------------------------------------------
+_low_power_active = False
+
+
+def is_low_power_active():
+    return _low_power_active
+
+
+def set_low_power_active(value):
+    global _low_power_active
+    _low_power_active = bool(value)
+
+
+def refresh_low_power_state():
+    """A appeler periodiquement (Clock) : met a jour le drapeau depuis la
+    batterie reelle et renvoie True si l'etat vient de changer."""
+    actif = get_power_manager().is_low_battery()
+    change = actif != _low_power_active
+    set_low_power_active(actif)
+    return change

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-App Maps NOVA — Navigation GPS avec simulation
-Carte offline mock, position simulée autour de Tunis
+App Maps NOVA — Navigation GPS.
+Vraie carte (tuiles locales Tunisie + routage Valhalla), position GPS simulee
+sur PC (autour de Tunis) tant qu'aucun module NEO-6M n'est branche.
 """
 
 from kivy.uix.screenmanager import Screen
@@ -12,35 +13,11 @@ from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.clock import Clock
 from kivy.metrics import dp
-from kivy.graphics import Color, Rectangle, Line
-import math
 import random
 
 from apps.base_app import BaseApp
 from nova.ui.theme import theme_manager
 from nova.ui.widgets import GlassCard, NeonButton
-
-
-def _opaque_backdrop(widget, opacity=0.93):
-    """Pose un fond opaque sombre derriere un conteneur.
-
-    La carte MapTiler est claire : les panneaux « verre » translucides y
-    deviennent laiteux et illisibles. On garantit donc un fond sombre plein
-    derriere les elements d'interface qui flottent au-dessus de la carte.
-    """
-    from kivy.graphics import Color, Rectangle
-    with widget.canvas.before:
-        col = Color(*theme_manager.get_with_alpha("background", opacity))
-        rect = Rectangle(pos=widget.pos, size=widget.size)
-
-    def _sync(*_a):
-        rect.pos = widget.pos
-        rect.size = widget.size
-        col.rgba = theme_manager.get_with_alpha("background", opacity)
-    widget.bind(pos=_sync, size=_sync)
-    return _sync
-
-
 
 
 def _opaque_backdrop(widget, alpha=0.88):
@@ -64,55 +41,6 @@ def _opaque_backdrop(widget, alpha=0.88):
     widget.bind(pos=_follow, size=_follow)
     _follow()
     return rect
-
-
-class MockMapWidget(FloatLayout):
-    """Widget carte simulée avec grille et position."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.lat = 36.8065  # Tunis
-        self.lon = 10.1815
-        self.zoom = 15
-        self._setup_graphics()
-        Clock.schedule_interval(self._update, 1.0)
-
-    def _setup_graphics(self):
-        with self.canvas:
-            # Fond carte
-            self.bg_color = Color(*theme_manager.get_color("surface"))
-            self.bg = Rectangle(pos=self.pos, size=self.size)
-
-            # Grille
-            self.grid_color = Color(*theme_manager.get_color("glass_border"))
-            self.grid_lines = []
-
-            # Position
-            self.pos_color = Color(*theme_manager.get_color("primary"))
-            self.pos_dot = Rectangle(pos=(0, 0), size=(dp(12), dp(12)))
-
-            # Cercle de précision
-            self.accuracy_color = Color(*theme_manager.get_color("primary"))
-            self.accuracy_circle = Line(circle=(0, 0, dp(30)), width=1)
-
-    def _update(self, dt):
-        # Simuler déplacement
-        self.lat += random.gauss(0, 0.00001)
-        self.lon += random.gauss(0, 0.00001)
-        self._redraw()
-
-    def _redraw(self):
-        self.bg.pos = self.pos
-        self.bg.size = self.size
-
-        # Position centrée
-        cx = self.center_x - dp(6)
-        cy = self.center_y - dp(6)
-        self.pos_dot.pos = (cx, cy)
-
-        # Cercle précision
-        self.accuracy_color.a = 0.3
-        self.accuracy_circle.circle = (self.center_x, self.center_y, dp(25 + random.random()*10))
 
 
 class MapsApp(BaseApp):

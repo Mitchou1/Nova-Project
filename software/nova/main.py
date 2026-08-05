@@ -96,9 +96,23 @@ class NovaApp(App):
         Window.bind(on_touch_down=self._on_any_touch)
         Clock.schedule_interval(self._check_idle, 1.0)
         Clock.schedule_interval(self._check_events, 20.0)
-        self._alerted = set()
+        Clock.schedule_interval(self._check_power, 30.0)
+        self._check_power(0)
 
         return self.root_layout
+
+    # ------------------------------------------------------------------
+    # Mode economie d'energie (cahier des charges, Phase 10)
+    # ------------------------------------------------------------------
+    def _check_power(self, _dt):
+        """Coupe animations/particules quand la batterie passe sous le seuil."""
+        try:
+            from nova.power_manager import refresh_low_power_state, is_low_power_active
+            if refresh_low_power_state():
+                actif = is_low_power_active()
+                print("[nova] mode economie d'energie :", "active" if actif else "desactive")
+        except Exception as error:
+            print("[nova] verification batterie :", error)
 
     # ------------------------------------------------------------------
     # Veille automatique
@@ -144,25 +158,13 @@ class NovaApp(App):
     # Alerte de rendez-vous a l'heure dite
     # ------------------------------------------------------------------
     def _check_events(self, _dt):
-        """Verifie s'il y a un rendez-vous a l'heure actuelle."""
-        from datetime import datetime
+        """Declenche l'alerte des que le delai de rappel de chaque evenement
+        est atteint (storage.due_reminders gere le declenchement unique via
+        la colonne `notified`, par evenement, avec son propre reminder_minutes)."""
         try:
             from apps.calendar import storage
-            maintenant = datetime.now()
-            aujourd_hui = maintenant.strftime("%Y-%m-%d")
-            for evenement in storage.get_events_for(aujourd_hui):
-                heure = (evenement.get("event_time")
-                         if isinstance(evenement, dict)
-                         else getattr(evenement, "event_time", "")) or ""
-                heure = heure[:5]
-                if not heure:
-                    continue
-                # L'heure du rendez-vous est-elle arrivee (a la minute pres) ?
-                if heure == maintenant.strftime("%H:%M"):
-                    cle = "{}|{}".format(aujourd_hui, heure)
-                    if cle not in self._alerted:
-                        self._alerted.add(cle)
-                        self.show_event_alert(evenement)
+            for evenement in storage.due_reminders():
+                self.show_event_alert(evenement)
         except Exception as error:
             print("[nova] verification des rendez-vous :", error)
 

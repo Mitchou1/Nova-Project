@@ -34,8 +34,12 @@ from nova.utils.platform_utils import is_raspberry_pi
 def effects_enabled(name, default="auto"):
     """Lit config/system.json -> "ui": {"particles": true|false|"auto"}.
 
-    "auto" = actif sur PC, coupé sur Raspberry Pi.
+    "auto" = actif sur PC, coupé sur Raspberry Pi. Coupé d'office en mode
+    économie d'énergie (batterie basse, Phase 10 du cahier des charges).
     """
+    from nova.power_manager import is_low_power_active
+    if is_low_power_active():
+        return False
     value = get_config().get("ui", {}).get(name, default)
     if isinstance(value, str) and value.lower() == "auto":
         return not is_raspberry_pi()
@@ -88,6 +92,13 @@ class GlassCard(FloatLayout):
             self.border_color = Color(*theme.get_rgba("glass_border"))
             self.border = Line(width=self.border_width)
 
+            # Reflet superieur : la charte demande un flou (backdrop-filter)
+            # que Kivy ne fournit pas nativement sans shader/FBO dedie ; ce
+            # trait fin et clair en haut de carte simule la lumiere qui
+            # "accroche" le verre, uniquement visible en mode Classic.
+            self.highlight_color = Color(1, 1, 1, 0)
+            self.highlight = Line(width=dp(1.0))
+
             # Ligne de balayage (charte : animation "scanline" à l'appui)
             self.scan_color = Color(*theme.get_rgba("primary", 0))
             self.scan = Line(width=dp(1.4))
@@ -135,6 +146,16 @@ class GlassCard(FloatLayout):
         else:
             self.border.points = []
             self.border.rounded_rectangle = (x, y, width, height, self.corner_radius)
+
+        # Reflet superieur, uniquement en mode Classic (simule le verre)
+        if getattr(theme, "name", "") == "classic":
+            inset = max(dp(3), self.chamfer or self.corner_radius)
+            self.highlight_color.a = 0.14
+            self.highlight.points = [x + inset, y + height - dp(1.5),
+                                     x + width - inset, y + height - dp(1.5)]
+        else:
+            self.highlight_color.a = 0
+            self.highlight.points = []
 
         # Position de la ligne de balayage
         if self.scanline_pos > 0:

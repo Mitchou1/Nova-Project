@@ -57,7 +57,13 @@ def mode_is_sharp(name):
 
 
 def animations_enabled():
-    """Animations actives ? 'auto' = oui sur PC, non sur Raspberry Pi."""
+    """Animations actives ? 'auto' = oui sur PC, non sur Raspberry Pi.
+
+    Coupées d'office en mode économie d'énergie (batterie basse, Phase 10).
+    """
+    from nova.power_manager import is_low_power_active
+    if is_low_power_active():
+        return False
     from nova.utils.config_loader import get_config
     from nova.utils.platform_utils import is_raspberry_pi
     value = get_config().get("ui", {}).get("animations", "auto")
@@ -258,7 +264,7 @@ class NavButton(ButtonBehavior, Widget):
         return theme.get_rgba("primary") if self.active else theme.get_rgba("surface_light", 0)
 
     def _redraw(self, *_):
-        d = dp(40)
+        d = dp(44)  # zone tactile recommandee pour un usage au poignet
         self._circle.pos = (self.center_x - d / 2, self.center_y - d / 2)
         self._circle.size = (d, d)
         self._circle.radius = [d / 2]
@@ -326,10 +332,9 @@ class HomeScreen(Screen):
         # Respiration avant la grille (reduite : les tuiles priment)
         self.column.add_widget(Widget(size_hint_y=0.015))
 
-        # Grille d'applications : le coeur de l'ecran, 2 rangees de 3
-        # 4 colonnes : les 7 apps tiennent en 2 rangees (au lieu de 3),
-        # ce qui laisse aux tuiles la hauteur necessaire pour les icones.
-        self.apps_grid = GridLayout(cols=4, spacing=dp(10), size_hint=(1, 0.47))
+        # Grille d'applications : le coeur de l'ecran.
+        # 3 colonnes, conforme a la maquette Stitch (code.html: grid-cols-3).
+        self.apps_grid = GridLayout(cols=3, spacing=dp(10), size_hint=(1, 0.47))
         self.column.add_widget(self.apps_grid)
 
         sensors = self._build_sensor_line()
@@ -415,7 +420,8 @@ class HomeScreen(Screen):
         self.event_caption.bind(size=lambda w, s: setattr(w, "text_size", s))
         self.event_label = Label(text="Aucun événement prévu", font_name=fonts.FONT_BODY,
                                  font_size=dp(14), halign="left", valign="top",
-                                 size_hint=(1, 0.58), color=theme.get_rgba("text_primary"))
+                                 size_hint=(1, 0.58), color=theme.get_rgba("text_primary"),
+                                 max_lines=1, shorten=True, shorten_from="right")
         self.event_label.bind(size=lambda w, s: setattr(w, "text_size", s))
         texts.add_widget(self.event_caption)
         texts.add_widget(self.event_label)
@@ -550,20 +556,15 @@ class HomeScreen(Screen):
             self.sensor_aqi.text = aqi
 
     def update_status(self, _dt=None):
-        """Statut WIFI + batterie en haut à droite."""
-        # WiFi : nombre de barres (simulation 4/4 sur PC)
-        wifi = "4/4"
-        try:
-            import glob, os
-            ifaces = glob.glob("/sys/class/net/wl*")
-            up = any(
-                open(os.path.join(i, "operstate")).read().strip() == "up"
-                for i in ifaces
-            ) if ifaces else False
-            if ifaces:
-                wifi = "4/4" if up else "0/4"
-        except Exception:
-            pass
+        """Statut WIFI + Bluetooth + batterie en haut à droite (texte, charte Undercover)."""
+        from nova.utils.platform_utils import wifi_state, bluetooth_state
+
+        # "none" (aucune interface, ex. sur PC de dev) est traité comme actif
+        # pour ne pas afficher une croix rouge trompeuse en simulation.
+        wifi_up = wifi_state() != "down"
+        bt_up = bluetooth_state() != "down"
+        wifi = "4/4" if wifi_up else "0/4"
+        bt = "ON" if bt_up else "OFF"
         # Batterie
         try:
             from nova.power_manager import get_power_manager
@@ -573,9 +574,10 @@ class HomeScreen(Screen):
         sec = theme.get_color("text_secondary").lstrip("#") + "ff"
         pri = theme.get_color("primary").lstrip("#") + "ff"
         self.status_label.text = (
-            "[color={}]WIFI[/color] [color={}]{}[/color]  "
-            "[color={}]BAT[/color] [color={}]{}%[/color]"
-        ).format(sec, pri, wifi, sec, pri, bat)
+            "[color={sec}]WIFI[/color] [color={pri}]{wifi}[/color]  "
+            "[color={sec}]BT[/color] [color={pri}]{bt}[/color]  "
+            "[color={sec}]BAT[/color] [color={pri}]{bat}%[/color]"
+        ).format(sec=sec, pri=pri, wifi=wifi, bt=bt, bat=bat)
 
     # ------------------------------------------------------------------
     def bind_launcher(self, launcher):

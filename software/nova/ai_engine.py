@@ -284,10 +284,25 @@ class TextToSpeech:
 class AssistantEngine:
     """Chaîne parole → texte → réponse → voix, avec briques remplaçables."""
 
+    # Paires utilisateur/assistant conservées dans l'historique (n_ctx=2048
+    # limite la fenêtre : au-delà, les tours les plus anciens sont oubliés).
+    MAX_HISTORY_TURNS = 6
+
     def __init__(self):
         self.stt = SpeechToText()
         self.llm = LanguageModel()
         self.tts = TextToSpeech()
+        self.history = []  # [{"role": "user"|"assistant", "content": str}, ...]
+
+    def _remember(self, role, content):
+        self.history.append({"role": role, "content": content})
+        limite = self.MAX_HISTORY_TURNS * 2
+        if len(self.history) > limite:
+            self.history = self.history[-limite:]
+
+    def reset_conversation(self):
+        """Efface l'historique (ex. bouton « nouvelle conversation »)."""
+        self.history = []
 
     def status(self):
         """Décrit l'état des trois briques (réel ou simulé)."""
@@ -308,50 +323,73 @@ class AssistantEngine:
         exécutée et la confirmation est renvoyée ; sinon, réponse en texte.
 
         app : référence à l'application NOVA (pour agir sur agenda, navigation…).
+
+        Diffuse la réponse token par token dès que possible (vrai streaming
+        llama.cpp) : une réponse en texte libre s'affiche donc au fur et à
+        mesure de sa génération. Une commande d'action (le premier caractère
+        non-blanc est "{") reste muette tant qu'elle n'est pas complète, pour
+        ne jamais afficher de JSON brut à l'écran.
         """
-        # Si le vrai LLM est là, on lui donne la liste des actions possibles et
-        # on regarde s'il produit une commande JSON.
         if self.llm.ready and self.llm.model is not None:
             from nova import assistant_actions as actions
 
             system = actions.build_system_prompt()
-            # Génération SANS streaming d'abord : on doit voir la réponse
-            # complète pour savoir si c'est une action (JSON) ou du texte.
+            messages = [{"role": "system", "content": system}]
+            messages.extend(self.history)
+            messages.append({"role": "user", "content": text})
+
+            raw = ""
+            first_char = None
             try:
-                result = self.llm.model.create_chat_completion(
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": text},
-                    ],
+                stream = self.llm.model.create_chat_completion(
+                    messages=messages,
                     max_tokens=256,
                     temperature=0.4,  # plus bas = plus fiable pour le JSON
+                    stream=True,
                 )
-                raw = result["choices"][0]["message"]["content"].strip()
+                for chunk in stream:
+                    delta = chunk["choices"][0].get("delta", {})
+                    piece = delta.get("content", "")
+                    if not piece:
+                        continue
+                    raw += piece
+                    if first_char is None:
+                        stripped = raw.lstrip()
+                        if stripped:
+                            first_char = stripped[0]
+                    if first_char is not None and first_char != "{" and on_token:
+                        on_token(piece)
             except Exception as error:
                 print("[llm] erreur de génération :", error)
                 raw = ""
+            raw = raw.strip()
 
-            # Le LLM a-t-il produit une commande d'action ?
+            reply = None
             data = actions.extract_json(raw)
             if data is not None:
                 confirmation = actions.execute_action(data, app=app)
                 if confirmation:
-                    # « taper » la confirmation mot à mot pour l'affichage
+                    reply = confirmation
+                    # Muette pendant le streaming (JSON) : "tapee" a la fin.
                     if on_token:
                         for word in confirmation.split(" "):
                             on_token(word + " ")
-                            time.sleep(0.03)
-                    return confirmation
-
-            # Sinon : réponse en texte libre (discussion)
-            if raw:
-                if on_token:
+                            time.sleep(0.02)
+            if reply is None and raw:
+                reply = raw
+                if first_char == "{" and on_token:
+                    # Ressemblait a une action mais JSON invalide/sans
+                    # confirmation : jamais diffusee plus haut, on la montre.
                     for word in raw.split(" "):
                         on_token(word + " ")
                         time.sleep(0.02)
-                return raw
 
-        # Repli : pas de vrai LLM -> simulation
+            if reply:
+                self._remember("user", text)
+                self._remember("assistant", reply)
+                return reply
+
+        # Repli : pas de vrai LLM -> simulation (pas de memoire, cas degrade)
         return self.llm.generate(text, on_token=on_token)
 
     def say(self, text):

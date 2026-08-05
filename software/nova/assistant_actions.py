@@ -14,7 +14,6 @@ Le flux :
 """
 
 import json
-import re
 from datetime import datetime, timedelta
 
 
@@ -114,20 +113,33 @@ def build_system_prompt():
 def extract_json(text):
     """Tente d'extraire un objet JSON d'action de la réponse du LLM.
 
+    Scanne les accolades équilibrées plutôt qu'une regex plate : la regex
+    d'origine (`\\{[^{}]*"action"[^{}]*\\}`) échouait dès que le JSON contenait
+    un objet imbriqué. Essaie chaque « { » de départ jusqu'à en trouver un qui
+    produise un objet JSON valide contenant la clé "action".
+
     Renvoie le dict si trouvé et valide, sinon None (= réponse en texte libre).
     """
     if not text:
         return None
-    # chercher le premier { ... } plausible
-    match = re.search(r"\{[^{}]*\"action\"[^{}]*\}", text)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-        if isinstance(data, dict) and "action" in data:
-            return data
-    except (json.JSONDecodeError, ValueError):
-        return None
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        data = json.loads(candidate)
+                    except (json.JSONDecodeError, ValueError):
+                        break
+                    if isinstance(data, dict) and "action" in data:
+                        return data
+                    break
+        start = text.find("{", start + 1)
     return None
 
 
@@ -199,15 +211,19 @@ def _add_event(data, app):
     date = data.get("date") or datetime.now().strftime("%Y-%m-%d")
     heure = data.get("heure") or "12:00"
     description = (data.get("description") or "").strip()
+    rappel = _int_borne(data.get("rappel"), defaut=10, minimum=0, maximum=1440)
     try:
         from apps.calendar import storage
         storage.add_event(title=titre, date=date, time=heure,
-                          description=description)
+                          description=description, reminder=rappel)
         try:
             d = datetime.strptime(date, "%Y-%m-%d")
             date_fr = d.strftime("%d/%m")
         except ValueError:
             date_fr = date
+        if rappel:
+            return "C'est noté : « {} » le {} à {}, rappel {} min avant.".format(
+                titre, date_fr, heure, rappel)
         return "C'est noté : « {} » le {} à {}.".format(titre, date_fr, heure)
     except Exception as error:
         print("[actions] ajout événement impossible :", error)
@@ -396,6 +412,16 @@ def _valeur_0_100(data, defaut=50):
         return max(0, min(100, int(data.get("valeur", defaut))))
     except (TypeError, ValueError):
         return None
+
+
+def _int_borne(valeur, defaut, minimum, maximum):
+    """Coerce/borne un argument numerique venant du LLM (jamais garanti valide :
+    le modele peut renvoyer une chaine, un flottant, ou une valeur aberrante)."""
+    try:
+        n = int(valeur)
+    except (TypeError, ValueError):
+        return defaut
+    return max(minimum, min(maximum, n))
 
 
 def _set_volume(data):

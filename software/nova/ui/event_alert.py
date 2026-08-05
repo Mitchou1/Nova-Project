@@ -78,6 +78,16 @@ class EventAlert(FloatLayout):
         self.details.bind(size=lambda w, s: setattr(w, "text_size", s))
         colonne.add_widget(self.details)
 
+        # Etat technique (vibration/voix indisponibles) : sur un wearable
+        # sans terminal, un print() seul est invisible pour l'utilisateur.
+        self.tech_status = Label(
+            text="", font_name=fonts.FONT_MONO, font_size=dp(9),
+            color=theme.get_rgba("error"),
+            size_hint=(1, 0.08), halign="center", valign="top", opacity=0,
+        )
+        self.tech_status.bind(size=lambda w, s: setattr(w, "text_size", s))
+        colonne.add_widget(self.tech_status)
+
         # Bouton de fermeture (l'alerte reste tant qu'on ne ferme pas)
         barre = BoxLayout(size_hint=(1, 0.20), padding=[dp(40), dp(6)])
         self.bouton = NeonButton(text="J'AI COMPRIS", corner_radius=dp(2))
@@ -121,6 +131,9 @@ class EventAlert(FloatLayout):
         if date:
             bas.append(date)
         self.details.text = "\n".join(bas) if bas else "—"
+        self._pannes = []
+        self.tech_status.text = ""
+        self.tech_status.opacity = 0
 
         # Apparition
         self.disabled = False
@@ -160,6 +173,13 @@ class EventAlert(FloatLayout):
             self._pulse_anim = None
         self._cadre_color.rgba = theme.get_rgba("warning", 0.9)
 
+    def _report_panne(self, libelle):
+        """Affiche une panne (vibration/voix) : sur un wearable sans terminal,
+        un print() seul ne serait jamais vu par l'utilisateur."""
+        self._pannes.append(libelle)
+        self.tech_status.text = " · ".join(self._pannes)
+        self.tech_status.opacity = 1
+
     def _vibrer(self, duree=600):
         """Fait vibrer l'appareil (moteur 3V sur le Pi)."""
         try:
@@ -167,6 +187,7 @@ class EventAlert(FloatLayout):
             _vibrate({"duree": duree})
         except Exception as error:
             print("[alerte] vibration impossible :", error)
+            Clock.schedule_once(lambda dt: self._report_panne("vibration indisponible"), 0)
 
     def _annoncer(self, titre, heure):
         """Annonce le rendez-vous à voix haute (Piper), sans figer l'écran."""
@@ -177,9 +198,13 @@ class EventAlert(FloatLayout):
         def parler():
             try:
                 from nova.ai_engine import get_engine
-                get_engine().say(phrase)
+                if not get_engine().say(phrase):
+                    Clock.schedule_once(
+                        lambda dt: self._report_panne("voix indisponible"), 0)
             except Exception as error:
                 print("[alerte] annonce vocale impossible :", error)
+                Clock.schedule_once(
+                    lambda dt: self._report_panne("voix indisponible"), 0)
 
         import threading
         threading.Thread(target=parler, daemon=True).start()

@@ -254,7 +254,7 @@ class EventCard(GlassCard):
         from nova.ui.widgets import NeonButton
         del_btn = NeonButton(
             icon="delete", accent="error",
-            size_hint=(None, None), size=(dp(34), dp(34)),
+            size_hint=(None, None), size=(dp(44), dp(44)),  # zone tactile au poignet
             pos_hint={'right': 0.975, 'center_y': 0.5},
             corner_radius=dp(2),
         )

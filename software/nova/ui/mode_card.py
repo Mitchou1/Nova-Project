@@ -3,15 +3,17 @@
 
 Trois personnalités visuelles :
   - classic     : coins arrondis, bordure fine translucide (glassmorphism)
-  - cyberpunk   : coins chanfreinés à 45°, bordure néon épaisse
+  - cyberpunk   : coins droits (charte : "Standard Containers"), bordure néon épaisse
   - undercover  : coins droits, bordure pointillée fine (terminal)
+
+Le chanfrein à 45° (chamfer_points / _mesh_from_polygon ci-dessous) reste
+disponible pour les tuiles interactives (AppTile, GlassCard.chamfer) — la
+charte ne le réserve qu'à elles, pas aux conteneurs génériques comme ModeCard.
 
 Le style se recalcule automatiquement à chaque changement de thème.
 """
 
-import math
-
-from kivy.graphics import Color, Line, Mesh, RoundedRectangle
+from kivy.graphics import Color, Line, RoundedRectangle
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -66,7 +68,6 @@ class ModeCard(FloatLayout):
 
         with self.canvas.before:
             self._fill_color = Color(*theme.get_rgba(fill_key))
-            self._mesh = Mesh(mode="triangle_fan")
             self._round = RoundedRectangle()
             self._border_color = Color(*self._border_rgba())
             self._line = Line()
@@ -105,22 +106,23 @@ class ModeCard(FloatLayout):
         self._border_color.rgba = self._border_rgba()
         bw = self._mode_border_width()
 
-        # Réinitialiser les trois tracés (on n'en montre qu'un selon le mode)
-        self._mesh.vertices = []
-        self._mesh.indices = []
+        # Réinitialiser le tracé (on n'en montre qu'un selon le mode)
         self._round.pos = (-9999, -9999)
         self._round.size = (0, 0)
         self._line.points = []
         self._line.rounded_rectangle = (0, 0, 0, 0, 0)
 
         if name == "cyberpunk":
-            cut = dp(12)
-            poly = chamfer_points(x, y, w, h, cut)
-            verts, idx = _mesh_from_polygon(poly)
-            self._mesh.vertices = verts
-            self._mesh.indices = idx
+            # Charte : "Standard Containers: 90-degree corners" — le chanfrein
+            # est réservé aux tuiles interactives (voir AppTile/GlassCard.chamfer),
+            # pas aux conteneurs génériques comme ModeCard.
+            self._round.pos = (x, y)
+            self._round.size = (w, h)
+            self._round.radius = [0]
             self._line.width = bw
-            self._line.points = poly + poly[0:2]   # referme le contour
+            self._line.dash_length = 100000
+            self._line.dash_offset = 0
+            self._line.rounded_rectangle = (x, y, w, h, 0)
         elif name == "undercover":
             self._round.pos = (x, y)
             self._round.size = (w, h)

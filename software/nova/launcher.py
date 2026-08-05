@@ -60,9 +60,9 @@ class AppLauncher:
             print(f"❌ Erreur chargement {app_name} : {e}")
 
     def load_all_apps(self):
-        """Charge toutes les apps découvertes"""
-        # Déjà fait dans discover_apps
-        pass
+        """Toutes les apps sont deja chargees par discover_apps() ; renvoie
+        leur nombre (main.py l'affiche au demarrage)."""
+        return len(self.loaded_apps)
 
     def get_app(self, app_name):
         """Retourne les infos d'une application"""

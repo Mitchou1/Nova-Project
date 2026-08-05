@@ -165,7 +165,9 @@ THEMES = {
         "success": "#00F0FF",
         "warning": "#FED639",
         "error": "#FF5449",
-        "glass": "rgba(0, 240, 255, 0.06)",
+        # Charte Stitch (classic-blue #002B36) : base "verre" teintee bleu
+        # nuit, pas teal — le teal reste reserve a l'accent primary.
+        "glass": "rgba(0, 43, 54, 0.55)",
         "glass_border": "rgba(255, 255, 255, 0.12)",
         "gradient_start": "#00F0FF",
         "gradient_end": "#00363A",

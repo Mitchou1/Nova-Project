@@ -438,8 +438,10 @@ def _add_event(data, app):
                 titre, date_fr, heure, rappel)
         return "C'est noté : « {} » le {} à {}.".format(titre, date_fr, heure)
     except Exception as error:
+        # L'erreur reelle n'apparaissait qu'en print(), invisible sur un
+        # wearable sans terminal attache — on la rend visible dans le chat.
         print("[actions] ajout événement impossible :", error)
-        return "Je n'ai pas réussi à enregistrer l'événement."
+        return "Je n'ai pas réussi à enregistrer l'événement ({}).".format(error)
 
 
 def _list_events(data, app):
@@ -459,7 +461,7 @@ def _list_events(data, app):
         return "Ce jour-là : " + " ; ".join(parts) + "."
     except Exception as error:
         print("[actions] lecture événements impossible :", error)
-        return "Je n'ai pas pu consulter l'agenda."
+        return "Je n'ai pas pu consulter l'agenda ({}).".format(error)
 
 
 def _delete_events(data, app):
@@ -479,7 +481,7 @@ def _delete_events(data, app):
         return "J'ai supprimé {} événement(s).".format(count)
     except Exception as error:
         print("[actions] suppression impossible :", error)
-        return "Je n'ai pas pu supprimer les événements."
+        return "Je n'ai pas pu supprimer les événements ({}).".format(error)
 
 
 def _open_app(data, app):

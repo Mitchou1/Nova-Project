@@ -17,6 +17,7 @@ Tout est conçu pour fonctionner HORS LIGNE : aucun appel réseau.
 """
 
 import random
+import threading
 import time
 from pathlib import Path
 
@@ -474,11 +475,19 @@ class AssistantEngine:
 
 
 _engine = None
+_engine_lock = threading.Lock()
 
 
 def get_engine():
-    """Instance partagée du moteur (chargée une seule fois)."""
+    """Instance partagée du moteur (chargée une seule fois).
+
+    Appelée depuis plusieurs threads (pipeline vocal, pipeline texte, alerte
+    d'événement) : sans verrou, un check-then-set non atomique sur _engine
+    laissait deux threads charger simultanément Whisper+LLM+Piper (~2,4 Go).
+    """
     global _engine
     if _engine is None:
-        _engine = AssistantEngine()
+        with _engine_lock:
+            if _engine is None:
+                _engine = AssistantEngine()
     return _engine

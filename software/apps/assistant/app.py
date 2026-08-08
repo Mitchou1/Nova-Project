@@ -4,6 +4,8 @@ App Assistant NOVA — Interface IA vocale.
 Pipeline reel : Whisper (faster-whisper) -> Qwen2.5 (llama.cpp) -> Piper.
 """
 
+import threading
+
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
@@ -136,26 +138,35 @@ class AssistantApp(BaseApp):
         # _run_pipeline/_run_typed_pipeline qui tournent deja dans un thread
         # separe, jamais sur le thread UI.
         self._engine = None
+        self._engine_lock = threading.Lock()
         self._last_audio = None
         super().__init__(**kwargs)
 
     def _get_engine(self):
-        """Charge le moteur IA au premier appel reel (voir __init__)."""
+        """Charge le moteur IA au premier appel reel (voir __init__).
+
+        Verrou : appelee depuis les threads du pipeline vocal et du pipeline
+        texte, qui peuvent demarrer quasi simultanement (micro + saisie
+        rapide) — sans lui, les deux threads passaient le test self._engine
+        is None avant qu'aucun n'affecte la variable.
+        """
         if self._engine is None:
-            from kivy.clock import Clock
-            Clock.schedule_once(
-                lambda dt: self._set_status("Chargement du modèle IA..."), 0)
-            from nova.ai_engine import get_engine
-            moteur = get_engine()
-            self._engine = moteur
-            if moteur.fully_simulated():
-                # Audit (severite HAUTE) : un echec de chargement (modele
-                # manquant, OOM, fichier corrompu) tombait en simulation
-                # sans jamais le signaler — un print() seul est invisible
-                # sur un wearable sans terminal.
-                Clock.schedule_once(lambda dt: self._add_message(
-                    "⚠ Modèle IA indisponible — je réponds en mode simulation.",
-                    is_user=False), 0)
+            with self._engine_lock:
+                if self._engine is None:
+                    from kivy.clock import Clock
+                    Clock.schedule_once(
+                        lambda dt: self._set_status("Chargement du modèle IA..."), 0)
+                    from nova.ai_engine import get_engine
+                    moteur = get_engine()
+                    self._engine = moteur
+                    if moteur.fully_simulated():
+                        # Audit (severite HAUTE) : un echec de chargement (modele
+                        # manquant, OOM, fichier corrompu) tombait en simulation
+                        # sans jamais le signaler — un print() seul est invisible
+                        # sur un wearable sans terminal.
+                        Clock.schedule_once(lambda dt: self._add_message(
+                            "⚠ Modèle IA indisponible — je réponds en mode simulation.",
+                            is_user=False), 0)
         return self._engine
 
     def build_ui(self):

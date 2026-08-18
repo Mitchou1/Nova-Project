@@ -13,9 +13,9 @@ fuite de connexions sur ce fichier).
 """
 
 import contextlib
-import sqlite3
 from datetime import datetime
 
+from nova import sqlite_utils
 from nova.paths import DATA_DIR
 
 MEMORY_DB = DATA_DIR / "memory.db"
@@ -38,21 +38,13 @@ CREATE TABLE IF NOT EXISTS frequency (
 
 
 def _connect(db_path=None):
-    path = db_path or MEMORY_DB
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(str(path))
-    connection.row_factory = sqlite3.Row
-    return connection
+    return sqlite_utils.connect(db_path or MEMORY_DB)
 
 
 @contextlib.contextmanager
 def _session(db_path=None):
-    connection = _connect(db_path)
-    try:
+    with sqlite_utils.session(db_path or MEMORY_DB) as connection:
         yield connection
-        connection.commit()
-    finally:
-        connection.close()
 
 
 def init_db(db_path=None):

@@ -49,15 +49,25 @@ def wifi_state():
 
 
 def bluetooth_state():
-    """Retourne "up", "down" ou "none" selon les contrôleurs Bluetooth."""
+    """Retourne "up", "down" ou "none" selon les contrôleurs Bluetooth.
+
+    Audit : `open()` ne fait pas d'expansion de glob ("rfkill*/state" était
+    passé tel quel comme nom de fichier) — l'ouverture echouait donc
+    toujours, l'erreur etait avalee, et la fonction renvoyait "up" sans
+    condition des le premier controleur trouve, meme Bluetooth eteint via
+    Reglages (bluetoothctl power off). `glob.glob()` resout d'abord le vrai
+    chemin du fichier d'etat rfkill, dont le contenu ("1"/"0") reflete
+    l'etat reel (kernel : 1 = actif, 0 = bloque).
+    """
     controllers = glob.glob("/sys/class/bluetooth/hci*")
     if not controllers:
         return "none"
     for controller in controllers:
-        try:
-            with open(os.path.join(controller, "rfkill*/state"), "r") as handle:
-                handle.read()
-        except (OSError, IOError):
-            pass
-        return "up"
+        for state_path in glob.glob(os.path.join(controller, "rfkill*/state")):
+            try:
+                with open(state_path, "r") as handle:
+                    if handle.read().strip() == "1":
+                        return "up"
+            except OSError:
+                continue
     return "down"

@@ -2,9 +2,9 @@
 """Accès SQLite de l'agenda (séparé de l'UI pour être testable seul)."""
 
 import contextlib
-import sqlite3
 from datetime import datetime, timedelta
 
+from nova import sqlite_utils
 from nova.paths import CALENDAR_DB
 
 SCHEMA = """
@@ -23,11 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date);
 
 
 def connect(db_path=None):
-    path = db_path or CALENDAR_DB
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(str(path))
-    connection.row_factory = sqlite3.Row
-    return connection
+    return sqlite_utils.connect(db_path or CALENDAR_DB)
 
 
 @contextlib.contextmanager
@@ -40,12 +36,8 @@ def _session(db_path=None):
     (main.py) : sans fermeture explicite, chaque appel accumulait un
     descripteur de fichier jamais libere.
     """
-    connection = connect(db_path)
-    try:
+    with sqlite_utils.session(db_path or CALENDAR_DB) as connection:
         yield connection
-        connection.commit()
-    finally:
-        connection.close()
 
 
 def init_db(db_path=None):

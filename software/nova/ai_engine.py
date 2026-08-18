@@ -17,11 +17,24 @@ Tout est conçu pour fonctionner HORS LIGNE : aucun appel réseau.
 """
 
 import random
+import threading
 import time
 from pathlib import Path
 
 from nova.paths import MODELS_DIR
 from nova.utils.platform_utils import is_raspberry_pi
+
+# Verrou partage entre enregistrement (STT) et lecture (TTS) : sounddevice/
+# PortAudio n'est pas concu pour deux flux (lecture + enregistrement) ouverts
+# simultanement depuis des threads differents sur le meme peripherique. Audit
+# (crash reel observe) : appuyer sur le micro (pipeline vocal, nouveau thread)
+# PENDANT qu'une reponse precedente etait encore lue a voix haute (pipeline
+# texte, thread separe) corrompait la memoire native de PortAudio — plantage
+# total de l'application ("free(): invalid size", SIGABRT/IOT). Les deux
+# pipelines (vocal et texte) tournent chacun dans leur propre thread
+# (apps/assistant/app.py) sans aucune coordination entre eux ; ce verrou est
+# donc la seule protection commune aux deux chemins.
+_AUDIO_IO_LOCK = threading.Lock()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,9 +99,12 @@ class SpeechToText:
         seconds = seconds or self.RECORD_SECONDS
         try:
             import sounddevice as sd
-            audio = sd.rec(int(seconds * self.SAMPLE_RATE),
-                          samplerate=self.SAMPLE_RATE, channels=1, dtype="float32")
-            sd.wait()
+            # Verrou : ne jamais enregistrer pendant qu'une lecture TTS est en
+            # cours sur un autre thread (cf. _AUDIO_IO_LOCK plus haut).
+            with _AUDIO_IO_LOCK:
+                audio = sd.rec(int(seconds * self.SAMPLE_RATE),
+                              samplerate=self.SAMPLE_RATE, channels=1, dtype="float32")
+                sd.wait()
             return audio.flatten()
         except Exception as error:
             print("[stt] enregistrement micro impossible :", error)
@@ -168,7 +184,14 @@ class LanguageModel:
             n_threads = 4 if is_raspberry_pi() else 8
             self.model = Llama(
                 model_path=str(path),
-                n_ctx=2048,
+                # Audit : 2048 etait trop juste des que l'historique
+                # persistant (memory_store) grossit — plante en usage reel
+                # avec "Requested tokens (2060) exceed context window of
+                # 2048", puis la reponse suivante devenait imprevisible
+                # (echec avale, retombe sur du texte libre sans JSON). Qwen
+                # 2.5 3B q5_k_m supporte 4096 sans souci de RAM sur la
+                # cible Pi 5 (memes raisons que le choix du modele Whisper).
+                n_ctx=4096,
                 n_threads=n_threads,
                 verbose=False,
             )
@@ -296,8 +319,13 @@ class TextToSpeech:
                     chunks.append(chunk.audio_int16_array)
                 if chunks:
                     audio = np.concatenate(chunks)
-                    sd.play(audio, samplerate=self.voice_model.config.sample_rate)
-                    sd.wait()
+                    rate = self.voice_model.config.sample_rate
+                    audio, rate = self._adapt_to_output_device(audio, rate)
+                    # Verrou : ne jamais lire pendant qu'un enregistrement
+                    # micro est en cours sur un autre thread (idem record()).
+                    with _AUDIO_IO_LOCK:
+                        sd.play(audio, samplerate=rate)
+                        sd.wait()
                 return True
             except Exception as error:
                 print("[tts] synthèse vocale impossible :", error)
@@ -305,6 +333,36 @@ class TextToSpeech:
         # Simulation (silencieux, le texte reste affiché à l'écran)
         print("[tts] (simulation) prononce :", text[:60])
         return False
+
+    @staticmethod
+    def _adapt_to_output_device(audio, rate):
+        """Rééchantillonne l'audio si le peripherique de sortie par defaut
+        n'accepte pas le taux natif de la voix Piper (22050 Hz).
+
+        Audit : certains peripheriques (ex. sortie HDMI sans ecran branche,
+        choisie par defaut par PulseAudio/ALSA a la place des haut-parleurs)
+        rejettent ce taux avec "Invalid sample rate" (PaErrorCode -9997) —
+        sd.play() levait alors une exception et aucun son ne sortait jamais,
+        meme quand Piper etait correctement charge. On rééchantillonne donc
+        toujours vers le taux par defaut reellement rapporte par le
+        peripherique de sortie avant lecture (pas de dependance scipy : simple
+        interpolation lineaire, suffisante pour de la parole).
+        """
+        import numpy as np
+        import sounddevice as sd
+        try:
+            device_rate = int(sd.query_devices(kind="output")["default_samplerate"])
+        except Exception:
+            return audio, rate
+        if device_rate <= 0 or device_rate == rate:
+            return audio, rate
+        duration = len(audio) / float(rate)
+        nb_echantillons = max(1, int(round(duration * device_rate)))
+        x_avant = np.linspace(0, duration, num=len(audio), endpoint=False)
+        x_apres = np.linspace(0, duration, num=nb_echantillons, endpoint=False)
+        reechantillonne = np.interp(
+            x_apres, x_avant, audio.astype(np.float32)).astype(np.int16)
+        return reechantillonne, device_rate
 
     @property
     def simulated(self):
@@ -387,6 +445,10 @@ class AssistantEngine:
         from nova import assistant_actions as actions
 
         rapide = actions.try_fast_path(text)
+        # Audit : aucune trace de quel chemin traite une commande -> impossible
+        # de savoir si une commande ratee est passee par le LLM (peu fiable
+        # pour le JSON) ou par le chemin rapide (fiable a 100%).
+        print("[ia] chemin rapide :", rapide if rapide is not None else "aucun (-> LLM)")
         if rapide is not None:
             # Meta-action sur l'IA elle-meme (pas un appareil a piloter) :
             # traitee ici, pas dans assistant_actions.execute_action qui
@@ -421,7 +483,13 @@ class AssistantEngine:
                 stream = self.llm.model.create_chat_completion(
                     messages=messages,
                     max_tokens=256,
-                    temperature=0.4,  # plus bas = plus fiable pour le JSON
+                    # Audit : un modele 3B quantifie ecrivait parfois une
+                    # confirmation en texte libre ("C'est note...") sans le
+                    # JSON d'action correspondant -> aucune action reellement
+                    # executee, mais l'utilisateur croyait le contraire.
+                    # Baisse encore la temperature (fiabilite JSON, cf.
+                    # REGLE ABSOLUE du prompt systeme dans assistant_actions.py).
+                    temperature=0.2,
                     stream=True,
                 )
                 for chunk in stream:
@@ -474,11 +542,19 @@ class AssistantEngine:
 
 
 _engine = None
+_engine_lock = threading.Lock()
 
 
 def get_engine():
-    """Instance partagée du moteur (chargée une seule fois)."""
+    """Instance partagée du moteur (chargée une seule fois).
+
+    Appelée depuis plusieurs threads (pipeline vocal, pipeline texte, alerte
+    d'événement) : sans verrou, un check-then-set non atomique sur _engine
+    laissait deux threads charger simultanément Whisper+LLM+Piper (~2,4 Go).
+    """
     global _engine
     if _engine is None:
-        _engine = AssistantEngine()
+        with _engine_lock:
+            if _engine is None:
+                _engine = AssistantEngine()
     return _engine

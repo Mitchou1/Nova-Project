@@ -9,7 +9,7 @@ DEFAULT_CONFIG = {
     "device_name": "NOVA",
     "version": "0.1.0",
     "screen": {"width": 800, "height": 480, "rotation": 0},
-    "theme": "nova_dark",
+    "theme": "classic",
     "language": "fr",
     "wifi": {"auto_connect": True},
     "power": {"low_battery_threshold": 15, "auto_sleep_minutes": 5},
@@ -52,11 +52,19 @@ def _strip_overlay(config, overlay):
             result[key] = value
             continue
         ov = overlay[key]
-        if isinstance(value, dict) and isinstance(ov, dict):
-            stripped = _strip_overlay(value, ov)
-            if stripped:
-                result[key] = stripped
-            # sinon : sous-dict entierement couvert par l'overlay, omis
+        if isinstance(value, dict):
+            if isinstance(ov, dict):
+                stripped = _strip_overlay(value, ov)
+                if stripped:
+                    result[key] = stripped
+                # sinon : sous-dict entierement couvert par l'overlay, omis
+            else:
+                # Overlay malformee (valeur scalaire la ou `value` est un
+                # dict) : impossible de savoir quelle cle du sous-dict est
+                # censee etre couverte, donc on garde `value` telle quelle
+                # plutot que de perdre toute une section (ex. "map") de
+                # system.json.
+                result[key] = value
         # sinon : valeur scalaire couverte par l'overlay, omise
     return result
 

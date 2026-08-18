@@ -4,6 +4,8 @@ App Assistant NOVA — Interface IA vocale.
 Pipeline reel : Whisper (faster-whisper) -> Qwen2.5 (llama.cpp) -> Piper.
 """
 
+import threading
+
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
@@ -136,26 +138,44 @@ class AssistantApp(BaseApp):
         # _run_pipeline/_run_typed_pipeline qui tournent deja dans un thread
         # separe, jamais sur le thread UI.
         self._engine = None
+        self._engine_lock = threading.Lock()
         self._last_audio = None
+        # Audit (crash reel observe, severite CRITIQUE) : appuyer sur le
+        # micro pendant qu'une reponse precedente etait encore en train
+        # d'etre lue a voix haute lancait un DEUXIEME thread accedant a la
+        # carte son (sd.rec) en meme temps que le premier (sd.play) ->
+        # corruption memoire native de PortAudio, crash total de l'appli
+        # ("free(): invalid size", SIGABRT). Empeche desormais de demarrer
+        # un second pipeline (vocal ou texte) tant qu'un premier n'est pas
+        # termine — en complement du verrou bas niveau dans ai_engine.py.
+        self._pipeline_busy = False
         super().__init__(**kwargs)
 
     def _get_engine(self):
-        """Charge le moteur IA au premier appel reel (voir __init__)."""
+        """Charge le moteur IA au premier appel reel (voir __init__).
+
+        Verrou : appelee depuis les threads du pipeline vocal et du pipeline
+        texte, qui peuvent demarrer quasi simultanement (micro + saisie
+        rapide) — sans lui, les deux threads passaient le test self._engine
+        is None avant qu'aucun n'affecte la variable.
+        """
         if self._engine is None:
-            from kivy.clock import Clock
-            Clock.schedule_once(
-                lambda dt: self._set_status("Chargement du modèle IA..."), 0)
-            from nova.ai_engine import get_engine
-            moteur = get_engine()
-            self._engine = moteur
-            if moteur.fully_simulated():
-                # Audit (severite HAUTE) : un echec de chargement (modele
-                # manquant, OOM, fichier corrompu) tombait en simulation
-                # sans jamais le signaler — un print() seul est invisible
-                # sur un wearable sans terminal.
-                Clock.schedule_once(lambda dt: self._add_message(
-                    "⚠ Modèle IA indisponible — je réponds en mode simulation.",
-                    is_user=False), 0)
+            with self._engine_lock:
+                if self._engine is None:
+                    from kivy.clock import Clock
+                    Clock.schedule_once(
+                        lambda dt: self._set_status("Chargement du modèle IA..."), 0)
+                    from nova.ai_engine import get_engine
+                    moteur = get_engine()
+                    self._engine = moteur
+                    if moteur.fully_simulated():
+                        # Audit (severite HAUTE) : un echec de chargement (modele
+                        # manquant, OOM, fichier corrompu) tombait en simulation
+                        # sans jamais le signaler — un print() seul est invisible
+                        # sur un wearable sans terminal.
+                        Clock.schedule_once(lambda dt: self._add_message(
+                            "⚠ Modèle IA indisponible — je réponds en mode simulation.",
+                            is_user=False), 0)
         return self._engine
 
     def build_ui(self):
@@ -260,7 +280,14 @@ class AssistantApp(BaseApp):
         text = self.text_input.text.strip()
         if not text:
             return
+        if self._pipeline_busy:
+            # Une reponse (vocale ou texte) est deja en cours : ignorer plutot
+            # que de lancer un deuxieme thread concurrent sur la carte son.
+            self._set_status("Patientez, je traite deja une demande...")
+            return
+        self._pipeline_busy = True
         self.text_input.text = ""
+        print("[assistant] Tape (texte) : {!r}".format(text))
         # réutilise le même pipeline, mais avec le vrai texte tapé
         self._last_typed = text
         import threading
@@ -270,27 +297,31 @@ class AssistantApp(BaseApp):
     def _run_typed_pipeline(self, user_text):
         """Traite une commande TAPÉE : texte -> réponse -> (action)."""
         from kivy.clock import Clock
-        engine = self._get_engine()
-        # Afficher le message de l'utilisateur
-        Clock.schedule_once(lambda dt: self._add_message(user_text, is_user=True), 0)
-        Clock.schedule_once(lambda dt: self._set_status("Réflexion..."), 0)
-        # Bulle de réponse
-        holder = {"label": None, "text": ""}
-        Clock.schedule_once(lambda dt: holder.__setitem__("label",
-                            self._add_message("", is_user=False)), 0)
+        try:
+            engine = self._get_engine()
+            # Afficher le message de l'utilisateur
+            Clock.schedule_once(lambda dt: self._add_message(user_text, is_user=True), 0)
+            Clock.schedule_once(lambda dt: self._set_status("Réflexion..."), 0)
+            # Bulle de réponse
+            holder = {"label": None, "text": ""}
+            Clock.schedule_once(lambda dt: holder.__setitem__("label",
+                                self._add_message("", is_user=False)), 0)
 
-        def on_token(piece):
-            holder["text"] += piece
-            lbl = holder["label"]
-            if lbl is not None:
-                Clock.schedule_once(
-                    lambda dt, t=holder["text"]: self._update_bubble(lbl, t), 0)
+            def on_token(piece):
+                holder["text"] += piece
+                lbl = holder["label"]
+                if lbl is not None:
+                    Clock.schedule_once(
+                        lambda dt, t=holder["text"]: self._update_bubble(lbl, t), 0)
 
-        reply = engine.respond(user_text, on_token=on_token, app=self)
-        # NOVA lit sa réponse à voix haute (Piper)
-        if reply:
-            engine.say(reply)
-        Clock.schedule_once(lambda dt: self._set_status("Prêt", idle=True), 0)
+            reply = engine.respond(user_text, on_token=on_token, app=self)
+            # NOVA lit sa réponse à voix haute (Piper)
+            if reply:
+                engine.say(reply)
+            Clock.schedule_once(lambda dt: self._set_status("Prêt", idle=True), 0)
+        finally:
+            # Toujours relacher, meme si respond()/say() a leve une exception.
+            self._pipeline_busy = False
 
     def _add_message(self, text, is_user=False):
         """Ajoute un message à la conversation. Renvoie le Label (pour maj)."""
@@ -307,6 +338,12 @@ class AssistantApp(BaseApp):
 
     def _on_talk_press(self, instance):
         """Début de l'écoute."""
+        if self._pipeline_busy:
+            # Une reponse est deja en cours (voix ou texte) : ignorer cet
+            # appui plutot que de risquer un enregistrement concurrent a
+            # une lecture TTS en cours (cf. audit crash dans __init__).
+            self._set_status("Patientez, je traite deja une demande...")
+            return
         self.is_listening = True
         self.status_text = "Écoute en cours..."
         self.status_label.text = self.status_text
@@ -324,6 +361,10 @@ class AssistantApp(BaseApp):
 
     def _on_talk_release(self, instance):
         """Fin de l'appui — lance la chaîne écoute → texte → réponse."""
+        if not self.is_listening:
+            # L'appui avait ete ignore par _on_talk_press (pipeline deja
+            # occupe) : ne pas lancer de deuxieme thread au relachement.
+            return
         self.is_listening = False
         # Réduire amplitude
         self.waveform.amplitude = 0.2
@@ -332,52 +373,62 @@ class AssistantApp(BaseApp):
         Animation.cancel_all(self.talk_btn, "press_inset")
         Animation(press_inset=0, duration=0.25, t="out_elastic").start(self.talk_btn)
         # Lancer la chaîne dans un thread pour ne pas figer l'interface
+        self._pipeline_busy = True
         import threading
         threading.Thread(target=self._run_pipeline, daemon=True).start()
 
     def _run_pipeline(self):
         """Chaîne complète : écoute micro → Whisper → Qwen → (action)."""
         from kivy.clock import Clock
-        engine = self._get_engine()
+        try:
+            engine = self._get_engine()
 
-        # 1) Écoute + transcription (audio -> texte)
-        # Whisper enregistre lui-même 5s depuis le micro puis transcrit.
-        Clock.schedule_once(lambda dt: self._set_status("Écoute... parlez"), 0)
-        user_text = engine.transcribe(None)  # None = enregistre depuis le micro
+            # 1) Écoute + transcription (audio -> texte)
+            # Whisper enregistre lui-même 5s depuis le micro puis transcrit.
+            Clock.schedule_once(lambda dt: self._set_status("Écoute... parlez"), 0)
+            user_text = engine.transcribe(None)  # None = enregistre depuis le micro
+            # Audit : jamais logue nulle part -> impossible de diagnostiquer une
+            # commande vocale mal reconnue sans capture d'ecran (le texte n'etait
+            # visible que dans l'UI, pas en console).
+            print("[assistant] Transcrit (voix) : {!r}".format(user_text))
 
-        if not user_text or not user_text.strip():
-            Clock.schedule_once(
-                lambda dt: self._set_status("Je n'ai rien entendu", idle=True), 0)
-            return
-
-        # Afficher ce que l'utilisateur a dit
-        Clock.schedule_once(lambda dt: self._add_message(user_text, is_user=True), 0)
-        Clock.schedule_once(lambda dt: self._set_status("Réflexion..."), 0)
-
-        # 2) Réponse (texte -> réponse), affichée mot à mot
-        holder = {"label": None, "text": ""}
-
-        def start_bubble(dt):
-            holder["label"] = self._add_message("", is_user=False)
-
-        Clock.schedule_once(start_bubble, 0)
-
-        def on_token(piece):
-            holder["text"] += piece
-            lbl = holder["label"]
-            if lbl is not None:
-                # mettre à jour le texte de la bulle sur le thread graphique
+            if not user_text or not user_text.strip():
                 Clock.schedule_once(
-                    lambda dt, t=holder["text"]: self._update_bubble(lbl, t), 0)
+                    lambda dt: self._set_status("Je n'ai rien entendu", idle=True), 0)
+                return
 
-        reply = engine.respond(user_text, on_token=on_token, app=self)
+            # Afficher ce que l'utilisateur a dit
+            Clock.schedule_once(lambda dt: self._add_message(user_text, is_user=True), 0)
+            Clock.schedule_once(lambda dt: self._set_status("Réflexion..."), 0)
 
-        # 3) Voix (texte -> audio)
-        engine.say(reply)
+            # 2) Réponse (texte -> réponse), affichée mot à mot
+            holder = {"label": None, "text": ""}
 
-        # Revenir à l'état d'attente
-        Clock.schedule_once(lambda dt: self._set_status("Appuyez et parlez", idle=True), 0)
-        print("[assistant] Reponse : {}".format(reply))
+            def start_bubble(dt):
+                holder["label"] = self._add_message("", is_user=False)
+
+            Clock.schedule_once(start_bubble, 0)
+
+            def on_token(piece):
+                holder["text"] += piece
+                lbl = holder["label"]
+                if lbl is not None:
+                    # mettre à jour le texte de la bulle sur le thread graphique
+                    Clock.schedule_once(
+                        lambda dt, t=holder["text"]: self._update_bubble(lbl, t), 0)
+
+            reply = engine.respond(user_text, on_token=on_token, app=self)
+
+            # 3) Voix (texte -> audio)
+            engine.say(reply)
+
+            # Revenir à l'état d'attente
+            Clock.schedule_once(lambda dt: self._set_status("Appuyez et parlez", idle=True), 0)
+            print("[assistant] Reponse : {}".format(reply))
+        finally:
+            # Toujours relacher, meme si transcribe()/respond()/say() a leve
+            # une exception — sinon le pipeline reste bloque "busy" a vie.
+            self._pipeline_busy = False
 
     def _set_status(self, text, idle=False):
         self.status_text = text

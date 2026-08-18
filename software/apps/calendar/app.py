@@ -17,6 +17,7 @@ from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.properties import StringProperty, ObjectProperty
 from datetime import datetime, timedelta
+import contextlib
 import sqlite3
 import os
 
@@ -86,8 +87,24 @@ class CalendarDatabase:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextlib.contextmanager
+    def _session(self):
+        """Comme _connect(), mais ferme reellement la connexion en sortie.
+
+        `with self._connect() as conn` ne fait QUE gerer la transaction
+        (commit/rollback) en sqlite3 — Connection.__exit__ n'appelle jamais
+        close(). Chaque ajout/suppression via l'ecran Calendrier accumulait
+        un descripteur de fichier jamais libere.
+        """
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
     def _init_db(self):
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +138,7 @@ class CalendarDatabase:
                     conn.execute("ALTER TABLE events ADD COLUMN {} {}".format(col, decl))
 
     def create(self, event):
-        with self._connect() as conn:
+        with self._session() as conn:
             cursor = conn.execute("""
                 INSERT INTO events (title, event_date, event_time, end_time,
                     priority, description, reminder_minutes, location, category, notified)
@@ -132,7 +149,7 @@ class CalendarDatabase:
             return cursor.lastrowid
 
     def get_by_date(self, date_str):
-        with self._connect() as conn:
+        with self._session() as conn:
             rows = conn.execute(
                 "SELECT * FROM events WHERE event_date = ? ORDER BY event_time",
                 (date_str,)
@@ -142,7 +159,7 @@ class CalendarDatabase:
     def get_upcoming(self, days=7):
         start = datetime.now().strftime("%Y-%m-%d")
         end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-        with self._connect() as conn:
+        with self._session() as conn:
             rows = conn.execute(
                 "SELECT * FROM events WHERE event_date BETWEEN ? AND ? ORDER BY event_date, event_time",
                 (start, end)
@@ -150,7 +167,7 @@ class CalendarDatabase:
             return [self._row_to_event(r) for r in rows]
 
     def delete(self, event_id):
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
 
     def _row_to_event(self, row):

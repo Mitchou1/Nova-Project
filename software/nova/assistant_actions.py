@@ -13,6 +13,7 @@ Le flux :
      de confirmation
 """
 
+import difflib
 import json
 import re
 import unicodedata
@@ -118,6 +119,14 @@ Si la demande ne correspond a AUCUNE action ci-dessus (par exemple discuter, rep
 une question generale), ne renvoie jamais de JSON : reponds normalement en texte.
 Si elle correspond a une action mais qu'il manque une information (ex. quelle destination,
 quelle heure), pose la question en texte plutot que de deviner une valeur.
+
+REGLE ABSOLUE : n'ecris JAMAIS une phrase qui ressemble a une confirmation ("C'est note",
+"J'ajoute", "C'est fait", "Rendez-vous cree"...) sans avoir d'abord renvoye le JSON de
+l'action correspondante. Le JSON est ce qui execute reellement l'action (ex. creer le
+rendez-vous) ; une phrase de confirmation ecrite seule, sans JSON, NE FAIT RIEN et trompe
+l'utilisateur en lui faisant croire qu'une action a eu lieu alors qu'aucune n'a ete
+executee. En cas de doute sur le format exact d'une action, prefere renvoyer le JSON
+(quitte a laisser un champ optionnel vide) plutot que d'ecrire une confirmation en texte.
 
 Aujourd'hui nous sommes le {today}. Pour "demain", "apres-demain", calcule la date reelle.
 Reponds en francais."""
@@ -270,6 +279,183 @@ _FAST_PATH_RULES = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Ajout de rendez-vous deterministe (sans LLM)
+# ─────────────────────────────────────────────────────────────────────────────
+# Audit : le LLM (3B, quantifie) produit parfois une phrase de confirmation
+# credible ("C'est note...") SANS le JSON d'action correspondant -> aucun
+# evenement n'est reellement cree, alors que l'utilisateur croit le contraire
+# (observe reellement : confirmation orale recue, mais rien en base). Comme
+# pour les autres commandes frequentes, on reconnait ici directement les
+# formulations les plus courantes d'ajout de rendez-vous : reponse fiable a
+# 100%, sans dependre du modele. Si la phrase est ambigue (date/heure non
+# reconnues), on renvoie None et l'appelant se rabat sur le LLM.
+
+_JOURS_SEMAINE = ["lundi", "mardi", "mercredi", "jeudi", "vendredi",
+                  "samedi", "dimanche"]
+
+_DATE_RELATIVE_RE = [
+    (re.compile(r"\bapres.?demain\b"), 2),   # avant "demain" : sous-chaine
+    (re.compile(r"\baujourd.?hui\b"), 0),
+    (re.compile(r"\bdemain\b"), 1),
+]
+
+_DATE_EXPLICITE_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b")
+
+_HEURE_RE = re.compile(
+    # Pas de \b final : un rendez-vous tape sans espace apres les minutes
+    # ("11h30de matin", faute de frappe reelle observee) doit rester
+    # reconnu — seuls les caracteres AVANT le marqueur "h"/"heures"/":"
+    # comptent pour l'heure elle-meme.
+    r"\b(?:a\s+)?(\d{1,2})\s*(?:h|:|heures?)\s*(\d{1,2})?")
+
+# Mots-cles de date reconnus par tolerance aux fautes de frappe (repli, si
+# aucune des regex exactes ci-dessus n'a matche). ex. "dedmain" -> "demain".
+_MOTS_DATE_RELATIVE_CONNUS = {"demain": 1, "aujourdhui": 0}
+
+_MOTS_DECLENCHEURS_EVENEMENT = re.compile(
+    r"\b(?:ajoute[rz]?|cree[rz]?|planifie[rz]?|note[rz]?|"
+    r"programme[rz]?|mets|mettre|prevois|prevoyez|prevoir)\s+"
+    r"(?:un\s+|une\s+)?(?:rendez.vous|rdv|evenement|rappel)\b")
+
+_RAPPELLE_MOI_RE = re.compile(r"\brappelle.moi\s+(?:de\s+|d['’]\s*)?")
+
+
+def _extraire_date_evenement(reste):
+    """(date AAAA-MM-JJ, span (debut,fin)) reconnus dans `reste`, ou (None, None)."""
+    for motif, delta in _DATE_RELATIVE_RE:
+        m = motif.search(reste)
+        if m:
+            d = (datetime.now() + timedelta(days=delta)).strftime("%Y-%m-%d")
+            return d, m.span()
+    for i, jour in enumerate(_JOURS_SEMAINE):
+        m = re.search(r"\b" + jour + r"\b", reste)
+        if m:
+            maintenant = datetime.now()
+            delta = (i - maintenant.weekday()) % 7
+            cible = maintenant + timedelta(days=delta)
+            return cible.strftime("%Y-%m-%d"), m.span()
+    m = _DATE_EXPLICITE_RE.search(reste)
+    if m:
+        jour, mois = int(m.group(1)), int(m.group(2))
+        annee_txt = m.group(3)
+        annee = datetime.now().year
+        if annee_txt:
+            annee = int(annee_txt) if len(annee_txt) == 4 else 2000 + int(annee_txt)
+        try:
+            return datetime(annee, mois, jour).strftime("%Y-%m-%d"), m.span()
+        except ValueError:
+            return None, None
+
+    # Repli tolerant aux fautes de frappe (ex. "dedmain" pour "demain",
+    # faute reelle observee) : compare chaque mot de la phrase aux mots-cles
+    # de date connus par similarite, plutot que par egalite stricte.
+    mots_connus = list(_MOTS_DATE_RELATIVE_CONNUS) + _JOURS_SEMAINE
+    for mot_trouve in re.finditer(r"[a-z']+", reste):
+        mot = mot_trouve.group(0)
+        if len(mot) < 5:
+            continue  # trop court pour une comparaison floue fiable
+        proches = difflib.get_close_matches(mot, mots_connus, n=1, cutoff=0.75)
+        if not proches:
+            continue
+        trouve = proches[0]
+        if trouve in _MOTS_DATE_RELATIVE_CONNUS:
+            delta = _MOTS_DATE_RELATIVE_CONNUS[trouve]
+            d = (datetime.now() + timedelta(days=delta)).strftime("%Y-%m-%d")
+            return d, mot_trouve.span()
+        i = _JOURS_SEMAINE.index(trouve)
+        maintenant = datetime.now()
+        delta = (i - maintenant.weekday()) % 7
+        cible = maintenant + timedelta(days=delta)
+        return cible.strftime("%Y-%m-%d"), mot_trouve.span()
+
+    return None, None
+
+
+def _extraire_heure_evenement(reste):
+    """("HH:MM", span) reconnus dans `reste`, ou (None, None)."""
+    m = _HEURE_RE.search(reste)
+    if not m:
+        return None, None
+    heure = int(m.group(1))
+    minute = int(m.group(2)) if m.group(2) else 0
+    if not (0 <= heure <= 23 and 0 <= minute <= 59):
+        return None, None
+    return "{:02d}:{:02d}".format(heure, minute), m.span()
+
+
+def _essai_ajout_rdv(text):
+    """Reconnait 'ajoute un rendez-vous <titre> <date> a <heure>' ou
+    'rappelle-moi de <titre> <date> a <heure>'.
+
+    Renvoie :
+      - un dict d'action "ajouter_evenement" complet si date ET heure sont
+        reconnues sans ambiguite (execution garantie, sans LLM) ;
+      - un dict d'action "demander_precision_evenement" si l'intention
+        d'ajouter un rendez-vous est claire (declencheur reconnu) mais que
+        la date ou l'heure n'a pas pu etre extraite (ex. faute de frappe
+        trop importante) — GARANTIT qu'on ne laisse plus jamais le LLM
+        halluciner une fausse confirmation pour cette action (observe
+        reellement : confirmation orale credible recue, aucun evenement
+        cree, a cause d'une simple faute de frappe sur "demain") ;
+      - None si aucun declencheur d'ajout de rendez-vous n'est present du
+        tout (l'appelant peut alors se rabattre sur le LLM pour autre chose).
+    """
+    norm = _sans_accents(text.strip().lower())
+    if not norm:
+        return None
+
+    m_decl = _MOTS_DECLENCHEURS_EVENEMENT.search(norm)
+    m_rappelle = None if m_decl else _RAPPELLE_MOI_RE.search(norm)
+    if m_decl is None and m_rappelle is None:
+        return None
+    reste = norm[(m_decl or m_rappelle).end():]
+
+    date, span_date = _extraire_date_evenement(reste)
+    heure, span_heure = _extraire_heure_evenement(reste)
+    if date is None or heure is None:
+        return {"action": "demander_precision_evenement"}
+
+    # Titre explicite ("sous le nom X", "intitule X"...) : prioritaire sur
+    # le simple texte restant, plus fiable quand la phrase contient aussi
+    # du bruit ("dedmain a 11h30de matin sous le nom test" -> "test", pas
+    # tout le reste de la phrase).
+    m_nom = re.search(
+        r"(?:sous le nom|intitule|qui s['’]appelle|appele|nomme)\s+"
+        r"(?:de\s+|d['’]\s*)?(.+)$",
+        reste)
+    if m_nom:
+        titre = m_nom.group(1)
+        # "intitule X" peut apparaitre AVANT la date/heure dans la phrase
+        # ("... intitule reunion de crise demain a 9h") : on les retire donc
+        # aussi du texte capture, pas seulement du reste global.
+        _, span_date_t = _extraire_date_evenement(titre)
+        _, span_heure_t = _extraire_heure_evenement(titre)
+        for debut, fin in sorted(
+                [s for s in (span_date_t, span_heure_t) if s], reverse=True):
+            titre = titre[:debut] + " " + titre[fin:]
+    else:
+        # Sinon : retire les deux portions reconnues (la plus a droite
+        # d'abord, pour ne pas decaler les indices de l'autre) — ce qui
+        # reste est le titre.
+        titre = reste
+        for debut, fin in sorted([s for s in (span_date, span_heure) if s],
+                                  reverse=True):
+            titre = titre[:debut] + " " + titre[fin:]
+    titre = re.sub(r"\s+", " ", titre).strip(" .,:;-'’")
+    if not titre:
+        return {"action": "demander_precision_evenement"}
+
+    return {
+        "action": "ajouter_evenement",
+        "titre": titre[:1].upper() + titre[1:],
+        "date": date,
+        "heure": heure,
+        "description": "",
+        "rappel": 10,
+    }
+
+
 def try_fast_path(text):
     """Reconnait une commande frequente sans passer par le LLM.
 
@@ -278,6 +464,11 @@ def try_fast_path(text):
     """
     if not text:
         return None
+
+    ajout_rdv = _essai_ajout_rdv(text)
+    if ajout_rdv is not None:
+        return ajout_rdv
+
     brut = _sans_accents(text.strip().lower())
 
     # "mode X" est ambigu entre theme d'interface et mode de la carte :
@@ -303,17 +494,77 @@ def try_fast_path(text):
 
     # "cherche/recherche/trouve X sur internet/le web/google" — phrasing
     # sans ambiguite (le qualificatif final la distingue d'une simple
-    # discussion), donc sure a court-circuiter le LLM.
+    # discussion), donc sure a court-circuiter le LLM. Les deux ordres sont
+    # geres (meme bug que "sur navigateur" corrige plus bas : "cherche sur
+    # internet X" place le qualificatif AVANT l'objet, pas apres — sans ce
+    # premier motif, "sur internet" se retrouvait avale dans la requete).
+    m = re.search(
+        r"(?:cherche[rsz]?|recherche[rsz]?|trouve[rsz]?(?:.moi)?)\s+"
+        r"sur (?:internet|le web|google|duckduckgo)\s+(.+)$", brut)
+    if m:
+        requete = m.group(1).strip()
+        if requete:
+            return {"action": "rechercher_web", "requete": requete}
     m = re.search(
         r"(?:cherche|recherche|trouve(?:.moi)?)\s+(.+?)\s+"
         r"sur (?:internet|le web|google|duckduckgo)\b", brut)
     if m:
         return {"action": "rechercher_web", "requete": m.group(1).strip()}
 
+    # "cherche/ouvre X sur/dans/avec le navigateur" — audit (bug reel
+    # observe) : sans cette regle, "sur navigateur" se retrouvait avale tel
+    # quel DANS la requete de recherche (rechercher_web echouait toujours,
+    # "sur navigateur" n'ayant aucun sens comme terme de recherche). Ici,
+    # l'intention est explicitement d'ouvrir un navigateur, pas de chercher
+    # localement — routee vers ouvrir_navigateur, jamais vers rechercher_web.
+    # Les deux ordres sont reconnus ("cherche X sur navigateur" ET "cherche
+    # sur navigateur X" — ce second ordre est celui reellement observe).
+    m = re.search(
+        r"\b(?:cherche[rsz]?|recherche[rsz]?|trouve[rsz]?(?:.moi)?)\s+"
+        r"(?:sur|dans|avec)\s+(?:le\s+|un\s+)?navigateur\s+(.*)$", brut)
+    if m:
+        requete = m.group(1).strip()
+        return ({"action": "ouvrir_navigateur", "requete": requete} if requete
+                else {"action": "ouvrir_navigateur"})
+    m = re.search(
+        r"\b(?:cherche[rsz]?|recherche[rsz]?|trouve[rsz]?(?:.moi)?)\s+"
+        r"(.*?)\s*(?:sur|dans|avec)\s+(?:le\s+|un\s+)?navigateur\b", brut)
+    if m:
+        requete = m.group(1).strip()
+        return ({"action": "ouvrir_navigateur", "requete": requete} if requete
+                else {"action": "ouvrir_navigateur"})
+
+    # "ouvre/lance le navigateur" (sans requete precise) — "navigateur"
+    # n'est volontairement pas un alias d'app (_APP_ALIASES) car ce n'est
+    # pas une application NOVA : sans cette regle dediee, la commande
+    # tombait sur le LLM qui repondait par une question au lieu d'agir
+    # (bug reel observe : "ouvre navigateur" -> LLM demande "quelle
+    # recherche voulez-vous faire ?" au lieu d'ouvrir quoi que ce soit).
+    m = re.search(r"\b(?:ouvre|ouvrir|lance|lancer)\s+(?:le\s+|un\s+)?navigateur\b",
+                  brut)
+    if m:
+        return {"action": "ouvrir_navigateur"}
+
     for motif, fabrique in _FAST_PATH_RULES:
         trouve = motif.search(brut)
         if trouve:
             return fabrique(trouve)
+
+    # Repli : "(peux-tu) cherche/chercher/recherche/rechercher/trouve(r) X"
+    # SANS qualificatif ("sur internet"), qui n'a matché aucune regle nommee
+    # ci-dessus (fichiers, suggestions, navigation...). Pas d'ancrage en debut
+    # de phrase : accepte les preambules courants ("est-ce que tu peux...",
+    # "j'aimerais que tu..."). Cahier des charges (BUG 1) : "recherche X" doit
+    # toujours afficher un resultat dans le chat, jamais ouvrir de navigateur
+    # ni dependre du LLM (peu fiable pour produire le JSON d'action) pour ce
+    # cas frequent.
+    m = re.search(
+        r"\b(?:cherche[rsz]?|recherche[rsz]?|trouve[rsz]?(?:.moi)?)\b\s+(.+)$",
+        brut)
+    if m:
+        requete = m.group(1).strip()
+        if requete:
+            return {"action": "rechercher_web", "requete": requete}
 
     return None
 
@@ -351,6 +602,8 @@ def _dispatch_action(data, app=None):
 
     if action == "ajouter_evenement":
         return _add_event(data, app)
+    if action == "demander_precision_evenement":
+        return _demander_precision_evenement()
     if action == "voir_evenements":
         return _list_events(data, app)
     if action == "supprimer_evenements":
@@ -418,6 +671,16 @@ def _dispatch_action(data, app=None):
     return None
 
 
+def _demander_precision_evenement():
+    """Reponse deterministe quand une intention d'ajout de rendez-vous est
+    detectee mais que la date ou l'heure reste ambigue (chemin rapide,
+    assistant_actions._essai_ajout_rdv). Ne passe jamais par le LLM pour ce
+    cas : garantit qu'aucune fausse confirmation n'est produite."""
+    return ("Je n'ai pas compris la date ou l'heure du rendez-vous. Pouvez-vous "
+            "repeter avec une date et une heure precises, par exemple "
+            "« demain a 15h » ?")
+
+
 def _add_event(data, app):
     titre = (data.get("titre") or "Événement").strip()
     date = data.get("date") or datetime.now().strftime("%Y-%m-%d")
@@ -438,8 +701,10 @@ def _add_event(data, app):
                 titre, date_fr, heure, rappel)
         return "C'est noté : « {} » le {} à {}.".format(titre, date_fr, heure)
     except Exception as error:
+        # L'erreur reelle n'apparaissait qu'en print(), invisible sur un
+        # wearable sans terminal attache — on la rend visible dans le chat.
         print("[actions] ajout événement impossible :", error)
-        return "Je n'ai pas réussi à enregistrer l'événement."
+        return "Je n'ai pas réussi à enregistrer l'événement ({}).".format(error)
 
 
 def _list_events(data, app):
@@ -459,7 +724,7 @@ def _list_events(data, app):
         return "Ce jour-là : " + " ; ".join(parts) + "."
     except Exception as error:
         print("[actions] lecture événements impossible :", error)
-        return "Je n'ai pas pu consulter l'agenda."
+        return "Je n'ai pas pu consulter l'agenda ({}).".format(error)
 
 
 def _delete_events(data, app):
@@ -479,7 +744,7 @@ def _delete_events(data, app):
         return "J'ai supprimé {} événement(s).".format(count)
     except Exception as error:
         print("[actions] suppression impossible :", error)
-        return "Je n'ai pas pu supprimer les événements."
+        return "Je n'ai pas pu supprimer les événements ({}).".format(error)
 
 
 def _open_app(data, app):
@@ -541,9 +806,18 @@ def _web_search(data):
         return "Pas de connexion internet pour faire une recherche."
     resultats = web_search.search(requete)
     reponse = web_search.format_for_speech(resultats, requete)
-    if not reponse:
-        return "Je n'ai rien trouve pour « {} ».".format(requete)
-    return reponse
+    if reponse:
+        return reponse
+    # Repli (accord utilisateur explicite) : DuckDuckGo (reponse instantanee)
+    # et Wikipedia ne couvrent que le factuel/encyclopedique — rien pour un
+    # commerce local, un produit, un prix... Plutot que d'echouer poliment
+    # sans jamais donner d'information reelle ("Je n'ai rien trouve pour..."),
+    # on ouvre un vrai navigateur avec un vrai moteur de recherche sur la
+    # meme requete. Different du bug original (recherche_web ouvrait TOUJOURS
+    # un navigateur sans jamais essayer localement d'abord) : ici la
+    # recherche locale est toujours tentee en premier, le navigateur n'est
+    # qu'un dernier recours si elle echoue vraiment.
+    return _open_browser({"requete": requete})
 
 
 def _open_browser(data):

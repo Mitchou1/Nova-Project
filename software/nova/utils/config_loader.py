@@ -9,7 +9,7 @@ DEFAULT_CONFIG = {
     "device_name": "NOVA",
     "version": "0.1.0",
     "screen": {"width": 800, "height": 480, "rotation": 0},
-    "theme": "nova_dark",
+    "theme": "classic",
     "language": "fr",
     "wifi": {"auto_connect": True},
     "power": {"low_battery_threshold": 15, "auto_sleep_minutes": 5},

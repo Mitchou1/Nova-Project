@@ -44,7 +44,7 @@ class NovaApp(App):
 
     def build(self):
         config = get_config()
-        theme.set_theme(config.get("theme", "nova_dark"))
+        theme.set_theme(config.get("theme", "classic"))
         Window.clearcolor = theme.get_rgba("background")
 
         if is_raspberry_pi():

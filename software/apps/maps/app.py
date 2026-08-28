@@ -232,11 +232,28 @@ class MapsApp(BaseApp):
                 root.add_widget(child)   # ré-ajouté en dernier = au premier plan
                 break
 
+    # ─── NOUVEAU : nettoyage de la route avant chaque calcul ──
+    def clear_route(self):
+        """Supprime la couche de route précédente du canvas."""
+        if hasattr(self.map_widget, 'clear_route'):
+            self.map_widget.clear_route()
+        else:
+            # Fallback : on tente de supprimer la couche de route si MapView a une méthode
+            try:
+                self.map_widget.remove_route_layer()
+            except AttributeError:
+                pass
+        # On supprime aussi les marqueurs de départ/arrivée pour éviter les confusions
+        if hasattr(self.map_widget, 'set_markers'):
+            self.map_widget.set_markers([])
+
     def _on_search(self, instance):
         """Lance la recherche de destination puis le calcul d'itinéraire."""
         query = self.search_input.text.strip()
         if not query:
             return
+        # Effacer l'ancienne route immédiatement (sur l'interface)
+        self.clear_route()
         self.nav_info.opacity = 1
         self.nav_info.text = "Recherche de « {} »...".format(query)
         # Travail réseau en arrière-plan pour ne pas figer l'écran
@@ -278,7 +295,10 @@ class MapsApp(BaseApp):
         # Calculer le vrai trajet par les routes (le profil suit le mode actif)
         r = navigation.route(slat, slon, dlat, dlon, profile=self._profile_for_mode())
         if r and r.get("points"):
+            # Route valide : on l'affiche
             def show_route(dt):
+                # On efface à nouveau pour être sûr (au cas où)
+                self.clear_route()
                 self.map_widget.set_route(r["points"])
                 self._set_nav_info(
                     "[b]{}[/b]  ·  {:.1f} km  ·  {:.0f} min".format(
@@ -289,16 +309,16 @@ class MapsApp(BaseApp):
                 self._show_start_button()
             Clock.schedule_once(show_route, 0)
         else:
-            # Repli : pas de routage (pas de clé ORS ou pas de réseau)
-            # -> ligne directe + distance à vol d'oiseau
-            dist = navigation.haversine_km(slat, slon, dlat, dlon)
-            def show_direct(dt):
-                self.map_widget.set_route([(slat, slon), (dlat, dlon)])
+            # Pas de route : on affiche un message d'erreur, on ne trace PAS de ligne droite
+            def show_error(dt):
                 self._set_nav_info(
-                    "[b]{}[/b]  ·  {:.1f} km à vol d'oiseau  "
-                    "(itinéraire routier indisponible)".format(dest["name"][:35], dist))
+                    "Impossible de calculer l'itinéraire. Vérifiez que le service Valhalla est actif (port 8002).\n"
+                    "Vous pouvez aussi réessayer avec une autre destination.")
+                # On s'assure qu'aucune route n'est affichée
+                self.clear_route()
                 self._current_route = None
-            Clock.schedule_once(show_direct, 0)
+                self._current_dest = None
+            Clock.schedule_once(show_error, 0)
 
     def _set_nav_info(self, text):
         self.nav_info.opacity = 1

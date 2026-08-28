@@ -63,53 +63,57 @@ REGLAGES
    {"action": "bluetooth", "actif": true}
 15. Activer/desactiver les notifications :
    {"action": "notifications", "actif": true}
+16. Activer le mode economie d'energie (baisse luminosite, desactive animations) :
+   {"action": "mode_economie", "actif": true}
+17. Desactiver le mode economie d'energie :
+   {"action": "mode_economie", "actif": false}
 
 CAPTEURS
-16. Lire un capteur (temperature, humidite, pression, distance, vitesse, position, accelerometre, gyroscope) :
+18. Lire un capteur (temperature, humidite, pression, distance, vitesse, position, accelerometre, gyroscope) :
    {"action": "lire_capteur", "capteur": "<nom>"}
-17. Lire tous les capteurs :
+19. Lire tous les capteurs :
    {"action": "etat_capteurs"}
 
 RADIO
-18. Controler la radio (scanner, arreter, monter, descendre) :
+20. Controler la radio (scanner, arreter, monter, descendre) :
    {"action": "controler_radio", "commande": "<nom>"}
-19. Regler la frequence radio en MHz :
+21. Regler la frequence radio en MHz :
    {"action": "regler_frequence", "valeur": <nombre>}
 
 SYSTEME
-20. Donner l'heure ou la date :
+22. Donner l'heure ou la date :
    {"action": "heure_date"}
-21. Etat de la batterie :
+23. Etat de la batterie :
    {"action": "batterie"}
-22. Redemarrer NOVA :
+24. Redemarrer NOVA :
    {"action": "redemarrer"}
-23. Faire vibrer l'appareil (duree en millisecondes) :
+25. Faire vibrer l'appareil (duree en millisecondes) :
    {"action": "vibrer", "duree": <nombre>}
-24. Prendre une photo avec la camera :
+26. Prendre une photo avec la camera :
    {"action": "prendre_photo"}
-25. Lister ce que tu sais faire (l'utilisateur demande de l'aide, ne sait pas quoi dire) :
+27. Lister ce que tu sais faire (l'utilisateur demande de l'aide, ne sait pas quoi dire) :
    {"action": "aide"}
-26. Chercher sur internet une information que tu ne connais pas ou qui peut avoir change
+28. Chercher sur internet une information que tu ne connais pas ou qui peut avoir change
    (actualite, definition, biographie, fait recent...) :
    {"action": "rechercher_web", "requete": "<texte de la recherche>"}
-27. Ouvrir le navigateur (montrer une recherche a l'ecran plutot que la dire) :
+29. Ouvrir le navigateur (montrer une recherche a l'ecran plutot que la dire) :
    {"action": "ouvrir_navigateur", "requete": "<texte de la recherche>"}
 
 FICHIERS
-28. Lister le contenu du dossier courant, ou d'un sous-dossier nomme (optionnel) :
+30. Lister le contenu du dossier courant, ou d'un sous-dossier nomme (optionnel) :
    {"action": "fichiers_lister", "dossier": "<nom, optionnel>"}
-29. Creer un dossier dans le dossier courant de l'app Fichiers :
+31. Creer un dossier dans le dossier courant de l'app Fichiers :
    {"action": "fichiers_creer_dossier", "nom": "<nom>"}
-30. Supprimer un fichier ou dossier par son nom (demande TOUJOURS une confirmation
+32. Supprimer un fichier ou dossier par son nom (demande TOUJOURS une confirmation
    a l'ecran avant de supprimer reellement — ne supprime jamais en silence) :
    {"action": "fichiers_supprimer", "nom": "<nom>"}
 
 LANGUE
-31. Changer la langue de reponse (francais, anglais, arabe) :
+33. Changer la langue de reponse (francais, anglais, arabe) :
    {"action": "changer_langue", "langue": "<nom>"}
 
 SUGGESTIONS
-32. Proposer des suggestions proactives (prochain evenement, destination frequente) :
+34. Proposer des suggestions proactives (prochain evenement, destination frequente) :
    {"action": "suggestions"}
 
 Pour une question factuelle a laquelle tu n'es pas sur de la reponse, ou qui peut avoir
@@ -276,6 +280,19 @@ _FAST_PATH_RULES = [
     (re.compile(r"(des suggestions|une suggestion|quoi de neuf|"
                 r"des recommandations|suggest something)"),
      lambda m: {"action": "suggestions"}),
+    # Mode économie d'énergie. Bug corrige : l'ancienne version testait
+    # "on" in m.group(0), or "economie" contient deja la sous-chaine "on"
+    # (éc-ON-omie) -> actif valait toujours True, meme pour "desactive le
+    # mode economie" (confirme par test reel). Ici, un verbe de desactivation
+    # explicite (groupe 1) force actif=False ; son absence (juste "mode
+    # economie", "passe en mode economie"...) est traitee comme une
+    # activation, ce qui correspond au sens naturel de la phrase. Teste
+    # contre `brut` (deja passe par _sans_accents) : les variantes
+    # accentuees de l'ancienne regex ne pouvaient de toute facon jamais
+    # matcher, elles sont retirees ici.
+    (re.compile(r"\b(desactive|desactiver|coupe|arrete)\s+(?:le\s+)?mode\s+economie|"
+                r"\bmode\s+economie(?:\s+d.energie)?\b|\beconomie\s+d.energie\b"),
+     lambda m: {"action": "mode_economie", "actif": not bool(m.group(1))}),
 ]
 
 
@@ -302,6 +319,14 @@ _DATE_RELATIVE_RE = [
 
 _DATE_EXPLICITE_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b")
 
+# Format ISO (AAAA-MM-JJ). Doit etre teste AVANT _DATE_EXPLICITE_RE : sinon
+# "2026-09-01" n'etait jamais reconnu comme un tout, mais _DATE_EXPLICITE_RE
+# matchait quand meme le sous-groupe "09-01" (le "2026-" restant hors de son
+# \b initial) et l'interpretait a tort comme jour=09/mois=01 -> bug confirme,
+# creait un evenement le 9 janvier au lieu du 1er septembre, avec en plus
+# "2026-" laisse dans le titre.
+_DATE_ISO_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+
 _HEURE_RE = re.compile(
     # Pas de \b final : un rendez-vous tape sans espace apres les minutes
     # ("11h30de matin", faute de frappe reelle observee) doit rester
@@ -321,6 +346,28 @@ _MOTS_DECLENCHEURS_EVENEMENT = re.compile(
 _RAPPELLE_MOI_RE = re.compile(r"\brappelle.moi\s+(?:de\s+|d['’]\s*)?")
 
 
+def _extraire_duree_relative(reste):
+    """Extrait une durée relative du type "dans X minutes/heures/jours"
+    et renvoie (date_absolue, heure_absolue, span) ou (None, None, None).
+    """
+    match = re.search(r"\bdans\s+(\d+)\s+(minute|minutes|heure|heures|jour|jours)\b", reste)
+    if not match:
+        return None, None, None
+    valeur = int(match.group(1))
+    unite = match.group(2)
+    if "minute" in unite:
+        delta = timedelta(minutes=valeur)
+    elif "heure" in unite:
+        delta = timedelta(hours=valeur)
+    elif "jour" in unite:
+        delta = timedelta(days=valeur)
+    else:
+        return None, None, None
+    maintenant = datetime.now()
+    cible = maintenant + delta
+    return cible.strftime("%Y-%m-%d"), cible.strftime("%H:%M"), match.span()
+
+
 def _extraire_date_evenement(reste):
     """(date AAAA-MM-JJ, span (debut,fin)) reconnus dans `reste`, ou (None, None)."""
     for motif, delta in _DATE_RELATIVE_RE:
@@ -335,6 +382,13 @@ def _extraire_date_evenement(reste):
             delta = (i - maintenant.weekday()) % 7
             cible = maintenant + timedelta(days=delta)
             return cible.strftime("%Y-%m-%d"), m.span()
+    m = _DATE_ISO_RE.search(reste)
+    if m:
+        annee, mois, jour = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            return datetime(annee, mois, jour).strftime("%Y-%m-%d"), m.span()
+        except ValueError:
+            return None, None
     m = _DATE_EXPLICITE_RE.search(reste)
     if m:
         jour, mois = int(m.group(1)), int(m.group(2))
@@ -384,6 +438,26 @@ def _extraire_heure_evenement(reste):
     return "{:02d}:{:02d}".format(heure, minute), m.span()
 
 
+def _etendre_article_precedent(texte, span):
+    """Etend un span de date vers la gauche pour englober un article
+    francais ("le "/"la "/"l'") qui le precede immediatement.
+
+    Bug confirme : "cree un evenement le 2026-09-01 a 9h : ..." laissait un
+    "Le" residuel en tete du titre, l'article n'etant pas retire avec la
+    date (contrairement a "demain"/"lundi" ou aucun article ne precede).
+    Cible uniquement l'article COLLE au debut de la date reconnue (pas un
+    strip global du titre), pour ne jamais amputer un titre qui commencerait
+    legitimement par "Le"/"La" sans rapport avec une date.
+    """
+    if not span:
+        return span
+    debut, fin = span
+    m = re.search(r"(?:\bl[ae]\s+|\bl['’]\s*)$", texte[:debut])
+    if m:
+        return (m.start(), fin)
+    return span
+
+
 def _essai_ajout_rdv(text):
     """Reconnait 'ajoute un rendez-vous <titre> <date> a <heure>' ou
     'rappelle-moi de <titre> <date> a <heure>'.
@@ -411,8 +485,16 @@ def _essai_ajout_rdv(text):
         return None
     reste = norm[(m_decl or m_rappelle).end():]
 
-    date, span_date = _extraire_date_evenement(reste)
-    heure, span_heure = _extraire_heure_evenement(reste)
+    # 1. Tenter d'extraire une durée relative ("dans X minutes")
+    date, heure, span_duree = _extraire_duree_relative(reste)
+    if date is not None and heure is not None:
+        # on a une date/heure absolue, on retire la durée du titre
+        reste = reste[:span_duree[0]] + " " + reste[span_duree[1]:]
+    else:
+        # 2. Sinon, extraire date et heure classiques
+        date, span_date = _extraire_date_evenement(reste)
+        heure, span_heure = _extraire_heure_evenement(reste)
+
     if date is None or heure is None:
         return {"action": "demander_precision_evenement"}
 
@@ -430,6 +512,7 @@ def _essai_ajout_rdv(text):
         # ("... intitule reunion de crise demain a 9h") : on les retire donc
         # aussi du texte capture, pas seulement du reste global.
         _, span_date_t = _extraire_date_evenement(titre)
+        span_date_t = _etendre_article_precedent(titre, span_date_t)
         _, span_heure_t = _extraire_heure_evenement(titre)
         for debut, fin in sorted(
                 [s for s in (span_date_t, span_heure_t) if s], reverse=True):
@@ -439,9 +522,29 @@ def _essai_ajout_rdv(text):
         # d'abord, pour ne pas decaler les indices de l'autre) — ce qui
         # reste est le titre.
         titre = reste
-        for debut, fin in sorted([s for s in (span_date, span_heure) if s],
-                                  reverse=True):
+        # utiliser les spans de date/heure extraits (si non None)
+        spans = []
+        if 'span_date' in locals() and span_date:
+            spans.append(_etendre_article_precedent(titre, span_date))
+        if 'span_heure' in locals() and span_heure:
+            spans.append(span_heure)
+        # span_duree n'est PAS rajoute ici : quand _extraire_duree_relative a
+        # reussi (ligne ~457), `reste` a deja ete reecrit pour retirer ce
+        # segment. Le reappliquer une seconde fois utilisait des indices
+        # perimes (calcules sur l'ancien `reste`, plus long) et decoupait au
+        # mauvais endroit -> bug confirme : "rappelle-moi dans 30 minutes de
+        # sortir les poubelles" donnait le titre "Poubelles" au lieu de
+        # "Sortir les poubelles".
+        for debut, fin in sorted([s for s in spans if s], reverse=True):
             titre = titre[:debut] + " " + titre[fin:]
+    # Connecteur residuel ("de "/"d'"/"pour ") : ni _RAPPELLE_MOI_RE ni le
+    # retrait des spans date/heure ne consomment ces mots de liaison quand
+    # ils precedent la date plutot que de la suivre immediatement — ex.
+    # "programme un rappel POUR lundi 10h : appeler le medecin" laissait
+    # "Pour : appeler le medecin" comme titre (bug confirme) une fois la
+    # date/heure retirees ; meme cause que "de" pour un delai relatif place
+    # avant le titre ("rappelle-moi dans 30 minutes DE sortir...").
+    titre = re.sub(r"^\s*(?:de\s+|d['’]\s*|pour\s+)", "", titre)
     titre = re.sub(r"\s+", " ", titre).strip(" .,:;-'’")
     if not titre:
         return {"action": "demander_precision_evenement"}
@@ -668,6 +771,9 @@ def _dispatch_action(data, app=None):
         return _set_language(data)
     if action == "suggestions":
         return _suggestions(app)
+    # Nouvelle action : mode économie d'énergie
+    if action == "mode_economie":
+        return _set_power_saving(data)
     return None
 
 
@@ -1268,6 +1374,49 @@ def _toggle_notifications(data):
     except Exception as error:
         print("[actions] notifications :", error)
         return "Je n'ai pas pu changer les notifications."
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# MODE ÉCONOMIE D'ÉNERGIE (nouveau)
+# ═════════════════════════════════════════════════════════════════════════
+def _set_power_saving(data):
+    """Active ou désactive le mode économie d'énergie.
+
+    Réduit la luminosité, désactive les animations Kivy, et ajuste d'autres
+    paramètres pour économiser la batterie.
+    """
+    actif = _bool_actif(data, defaut=True)
+    try:
+        cfg = _config()
+        cfg.set("power_saving", actif)
+        # Appliquer les changements au niveau de l'interface
+        from kivy.clock import Clock
+        if actif:
+            # Réduire la luminosité à 30% si elle est > 50
+            bright = cfg.get("audio", {}).get("brightness", 100)
+            if bright > 50:
+                _set_brightness({"valeur": 30})
+            # Désactiver les animations (via un flag global)
+            try:
+                from kivy.config import Config
+                Config.set('kivy', 'animation_duration', '0.0')
+            except Exception:
+                pass
+            # Désactiver l'écran de veille trop fréquent
+            # (déjà géré par le timeout)
+            return "Mode économie d'énergie activé. Luminosité réduite, animations désactivées."
+        else:
+            # Restaurer la luminosité à 80%
+            _set_brightness({"valeur": 80})
+            try:
+                from kivy.config import Config
+                Config.set('kivy', 'animation_duration', '0.2')
+            except Exception:
+                pass
+            return "Mode économie d'énergie désactivé. Paramètres normaux restaurés."
+    except Exception as error:
+        print("[actions] mode economie :", error)
+        return "Je n'ai pas pu changer le mode économie."
 
 
 # ═════════════════════════════════════════════════════════════════════════

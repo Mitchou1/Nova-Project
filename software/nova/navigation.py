@@ -224,10 +224,24 @@ def route(start_lat, start_lon, end_lat, end_lon, profile="driving-car"):
 
     Stratégie : Valhalla LOCAL d'abord (hors ligne, pas de clé, pas de quota),
     puis OpenRouteService (en ligne) si Valhalla ne répond pas.
+
+    Bug observé (ligne droite affichée sur la carte) : juste après le
+    démarrage du conteneur Valhalla, son serveur HTTP répond déjà sur
+    /status alors que ses tuiles routières sont encore en cours de
+    construction en arrière-plan — un appel /route pendant cette fenêtre
+    renvoie parfois un trajet dégradé à seulement 2 points (départ ->
+    arrivée), que la carte trace comme une ligne droite au lieu d'un vrai
+    itinéraire. _route_valhalla rejette déjà ce cas (voir plus bas), donc il
+    est traité ici comme un échec ; on retente une fois après une courte
+    pause avant de basculer sur ORS, pour absorber ce délai de démarrage
+    sans obliger l'utilisateur à redémarrer le conteneur à la main.
     """
-    result = _route_valhalla(start_lat, start_lon, end_lat, end_lon, profile)
-    if result is not None:
-        return result
+    for tentative in range(2):
+        result = _route_valhalla(start_lat, start_lon, end_lat, end_lon, profile)
+        if result is not None:
+            return result
+        if tentative == 0:
+            time.sleep(2)
     return _route_ors(start_lat, start_lon, end_lat, end_lon, profile)
 
 
@@ -264,6 +278,16 @@ def _route_valhalla(start_lat, start_lon, end_lat, end_lon, profile="driving-car
         points = []
         for leg in legs:
             points.extend(_decode_polyline6(leg["shape"]))
+        # Un vrai trajet routier suit les rues et compte presque toujours
+        # plus de 2 points ; Valhalla renvoie un trajet dégradé à 2 points
+        # (départ -> arrivée, tracé en ligne droite par la carte) quand ses
+        # tuiles ne sont pas encore chargées, juste après le démarrage du
+        # conteneur. On le traite comme un échec plutôt que d'afficher une
+        # fausse ligne droite : route() retentera puis basculera sur ORS.
+        if len(points) < 3:
+            print("[nav] Valhalla : trajet dégradé ({} point(s)), tuiles "
+                  "probablement pas encore chargées.".format(len(points)))
+            return None
         summary = trip.get("summary", {})
         dist_km = summary.get("length", 0)          # déjà en km chez Valhalla
         dur_min = summary.get("time", 0) / 60.0
@@ -308,6 +332,11 @@ def _route_ors(start_lat, start_lon, end_lat, end_lon, profile="driving-car"):
     coords = feat.get("geometry", {}).get("coordinates", [])
     # GeoJSON LineString : [[lon, lat], ...] -> on veut [(lat, lon), ...]
     points = [(c[1], c[0]) for c in coords if len(c) >= 2]
+    if len(points) < 3:
+        # Même garde-fou que pour Valhalla : un trajet à 2 points se
+        # traçerait comme une ligne droite plutôt qu'un vrai itinéraire.
+        print("[nav] ORS : trajet dégradé ({} point(s)).".format(len(points)))
+        return None
 
     summary = feat.get("properties", {}).get("summary", {})
     dist_km = summary.get("distance", 0) / 1000.0

@@ -51,6 +51,36 @@ def _taille_lisible(octets):
     return "{:.0f} Go".format(octets)
 
 
+
+# Extensions reconnues, par famille
+_IMAGES = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+_TEXTES = {".txt", ".md", ".json", ".log", ".csv", ".py", ".sh", ".ini"}
+_AUDIOS = {".wav", ".mp3", ".ogg", ".flac", ".m4a"}
+_VIDEOS = {".mp4", ".avi", ".mkv", ".mov"}
+
+
+def _icone_fichier(chemin):
+    """Choisit l'icone selon le type de fichier."""
+    ext = chemin.suffix.lower()
+    if ext in _IMAGES:
+        return "image"
+    if ext in _TEXTES:
+        return "description"
+    if ext in _AUDIOS:
+        return "audiotrack"
+    if ext in _VIDEOS:
+        return "movie"
+    return "insert_drive_file"
+
+
+def _est_image(chemin):
+    return chemin.suffix.lower() in _IMAGES
+
+
+def _est_texte(chemin):
+    return chemin.suffix.lower() in _TEXTES
+
+
 class EntryRow(GlassCard):
     """Une ligne : dossier ou fichier."""
 
@@ -63,7 +93,7 @@ class EntryRow(GlassCard):
         self.on_menu = on_menu
 
         couleur = ("primary" if est_dossier else "text_secondary")
-        icone = "folder" if est_dossier else "image"
+        icone = "folder" if est_dossier else _icone_fichier(chemin)
 
         # Icone
         self.add_widget(Label(
@@ -109,8 +139,8 @@ class EntryRow(GlassCard):
         self.add_widget(menu)
 
     def on_touch_down(self, touch):
-        """Un appui sur la ligne ouvre le dossier."""
-        if self.collide_point(*touch.pos) and self.est_dossier:
+        """Un appui ouvre le dossier, ou previsualise le fichier."""
+        if self.collide_point(*touch.pos):
             # Laisser le bouton menu recevoir son propre appui
             for enfant in self.children:
                 if hasattr(enfant, "icon") and enfant.collide_point(*touch.pos):
@@ -130,6 +160,7 @@ class FilesApp(BaseApp):
 
     def __init__(self, **kwargs):
         self.dossier_courant = _racine()
+        self._presse_papier = None      # (chemin, "copier"|"couper")
         super().__init__(**kwargs)
 
     def build_ui(self):
@@ -155,11 +186,28 @@ class FilesApp(BaseApp):
             size=lambda w, s: setattr(w, "text_size", (s[0], s[1])))
         barre.add_widget(self.chemin_label)
 
-        btn_nouveau = NeonButton(icon="create_new_folder", text="DOSSIER",
-                                 size_hint=(None, 1), width=dp(120),
-                                 corner_radius=dp(2))
+        btn_nouveau = NeonButton(icon="create_new_folder", size_hint=(None, 1),
+                                 width=dp(50), corner_radius=dp(2))
         btn_nouveau.bind(on_press=lambda *_a: self._demander_nom())
         barre.add_widget(btn_nouveau)
+
+        btn_note = NeonButton(icon="note_add", size_hint=(None, 1),
+                              width=dp(50), corner_radius=dp(2))
+        btn_note.bind(on_press=lambda *_a: self._creer_note())
+        barre.add_widget(btn_note)
+
+        btn_import = NeonButton(icon="download", size_hint=(None, 1),
+                                width=dp(50), corner_radius=dp(2))
+        btn_import.bind(on_press=lambda *_a: self._importer())
+        barre.add_widget(btn_import)
+
+        # Bouton coller : visible seulement quand le presse-papier est plein
+        self.btn_coller = NeonButton(icon="content_paste", size_hint=(None, 1),
+                                     width=dp(50), corner_radius=dp(2))
+        self.btn_coller.bind(on_press=lambda *_a: self.coller())
+        self.btn_coller.opacity = 0
+        self.btn_coller.disabled = True
+        barre.add_widget(self.btn_coller)
 
         main.add_widget(barre)
 
@@ -226,10 +274,71 @@ class FilesApp(BaseApp):
             fichiers, "S" if fichiers > 1 else "")
 
     def ouvrir(self, chemin):
-        """Entre dans un dossier."""
+        """Entre dans un dossier, ou previsualise un fichier."""
         if chemin.is_dir():
             self.dossier_courant = chemin
             self.rafraichir()
+        else:
+            self.previsualiser(chemin)
+
+    # ------------------------------------------------------------------
+    # Lecture des fichiers
+    # ------------------------------------------------------------------
+    def previsualiser(self, chemin):
+        """Affiche une image en grand, ou le contenu d'un fichier texte."""
+        from kivy.uix.image import Image as KivyImage
+
+        boite = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
+        popup = Popup(title=chemin.name, content=boite, size_hint=(0.92, 0.88),
+                      separator_height=dp(1))
+
+        if _est_image(chemin):
+            try:
+                if chemin.stat().st_size == 0:
+                    boite.add_widget(Label(
+                        text="IMAGE VIDE\n(photo simulee, aucune camera connectee)",
+                        font_name=fonts.FONT_MONO, font_size=dp(11),
+                        color=theme_manager.get_color("text_secondary"),
+                        halign="center"))
+                else:
+                    boite.add_widget(KivyImage(source=str(chemin),
+                                               allow_stretch=True,
+                                               keep_ratio=True))
+            except Exception as error:
+                print("[fichiers] image illisible :", error)
+                boite.add_widget(Label(text="IMAGE ILLISIBLE",
+                                       color=theme_manager.get_color("error")))
+
+        elif _est_texte(chemin):
+            defilement = ScrollView()
+            try:
+                contenu = chemin.read_text(encoding="utf-8", errors="replace")
+            except Exception as error:
+                contenu = "Lecture impossible : {}".format(error)
+            if len(contenu) > 20000:
+                contenu = contenu[:20000] + "\n\n[... fichier tronque ...]"
+            texte = Label(text=contenu or "(fichier vide)",
+                          font_name=fonts.FONT_MONO, font_size=dp(11),
+                          color=theme_manager.get_color("text"),
+                          size_hint_y=None, halign="left", valign="top")
+            texte.bind(width=lambda w, v: setattr(w, "text_size", (v, None)),
+                       texture_size=lambda w, v: setattr(w, "height", v[1]))
+            defilement.add_widget(texte)
+            boite.add_widget(defilement)
+
+        else:
+            taille = _taille_lisible(chemin.stat().st_size)
+            boite.add_widget(Label(
+                text="APERÇU INDISPONIBLE\n\n{}\n{}".format(chemin.suffix.upper()
+                                                              or "SANS EXTENSION", taille),
+                font_name=fonts.FONT_MONO, font_size=dp(11),
+                color=theme_manager.get_color("text_secondary"), halign="center"))
+
+        fermer = NeonButton(text="FERMER", size_hint_y=None, height=dp(44),
+                            corner_radius=dp(2))
+        fermer.bind(on_press=lambda *_a: popup.dismiss())
+        boite.add_widget(fermer)
+        popup.open()
 
     def remonter(self):
         """Remonte d'un niveau, sans depasser la racine."""
@@ -306,7 +415,19 @@ class FilesApp(BaseApp):
         popup = Popup(title="ACTIONS", content=boite, size_hint=(0.75, 0.5),
                       separator_height=dp(1))
 
-        renommer = NeonButton(text="RENOMMER", size_hint_y=None, height=dp(44),
+        copier = NeonButton(text="COPIER", size_hint_y=None, height=dp(42),
+                            corner_radius=dp(2))
+        copier.bind(on_press=lambda *_a: (popup.dismiss(),
+                                          self.presse_papier(ligne.chemin, "copier")))
+        boite.add_widget(copier)
+
+        couper = NeonButton(text="DÉPLACER", size_hint_y=None, height=dp(42),
+                            corner_radius=dp(2))
+        couper.bind(on_press=lambda *_a: (popup.dismiss(),
+                                          self.presse_papier(ligne.chemin, "couper")))
+        boite.add_widget(couper)
+
+        renommer = NeonButton(text="RENOMMER", size_hint_y=None, height=dp(42),
                               corner_radius=dp(2))
         renommer.bind(on_press=lambda *_a: (
             popup.dismiss(),
@@ -315,16 +436,17 @@ class FilesApp(BaseApp):
         boite.add_widget(renommer)
 
         supprimer = NeonButton(text="SUPPRIMER", accent="error",
-                               size_hint_y=None, height=dp(44),
+                               size_hint_y=None, height=dp(42),
                                corner_radius=dp(2))
         supprimer.bind(on_press=lambda *_a: (
             popup.dismiss(), self._confirmer_suppression(ligne.chemin)))
         boite.add_widget(supprimer)
 
-        fermer = NeonButton(text="FERMER", size_hint_y=None, height=dp(40),
+        fermer = NeonButton(text="FERMER", size_hint_y=None, height=dp(38),
                             corner_radius=dp(2))
         fermer.bind(on_press=lambda *_a: popup.dismiss())
         boite.add_widget(fermer)
+        popup.size_hint = (0.75, 0.72)
         popup.open()
 
     def renommer(self, chemin, nouveau_nom):
@@ -391,6 +513,250 @@ class FilesApp(BaseApp):
         except Exception as error:
             print("[fichiers] suppression impossible :", error)
             self._message("SUPPRESSION IMPOSSIBLE")
+
+
+    # ------------------------------------------------------------------
+    # Copier / deplacer (presse-papier)
+    # ------------------------------------------------------------------
+    def presse_papier(self, chemin, operation):
+        """Met un element en attente de collage."""
+        self._presse_papier = (chemin, operation)
+        self.btn_coller.opacity = 1
+        self.btn_coller.disabled = False
+        verbe = "COPIÉ" if operation == "copier" else "COUPÉ"
+        self._message("{} : {} — ouvrez un dossier puis collez".format(
+            verbe, chemin.name))
+
+    def coller(self):
+        """Colle l'element du presse-papier dans le dossier courant."""
+        if not self._presse_papier:
+            return
+        source, operation = self._presse_papier
+        if not source.exists():
+            self._message("LA SOURCE N'EXISTE PLUS")
+            self._vider_presse_papier()
+            return
+
+        cible = self.dossier_courant / source.name
+        # Ne pas coller un dossier dans lui-meme
+        try:
+            if source.is_dir() and self.dossier_courant.is_relative_to(source):
+                self._message("IMPOSSIBLE : DOSSIER DANS LUI-MÊME")
+                return
+        except AttributeError:      # Python < 3.9
+            if source.is_dir() and str(self.dossier_courant).startswith(str(source)):
+                self._message("IMPOSSIBLE : DOSSIER DANS LUI-MÊME")
+                return
+
+        # Nom unique si un element du meme nom existe deja
+        if cible.exists():
+            base, ext = source.stem, source.suffix
+            n = 2
+            while cible.exists():
+                cible = self.dossier_courant / "{} ({}){}".format(base, n, ext)
+                n += 1
+
+        try:
+            if operation == "copier":
+                if source.is_dir():
+                    shutil.copytree(source, cible)
+                else:
+                    shutil.copy2(source, cible)
+                self._message("COPIÉ : {}".format(cible.name))
+            else:
+                shutil.move(str(source), str(cible))
+                self._message("DÉPLACÉ : {}".format(cible.name))
+                self._vider_presse_papier()
+            self.rafraichir()
+        except Exception as error:
+            print("[fichiers] collage impossible :", error)
+            self._message("COLLAGE IMPOSSIBLE")
+
+    def _vider_presse_papier(self):
+        self._presse_papier = None
+        self.btn_coller.opacity = 0
+        self.btn_coller.disabled = True
+
+    # ------------------------------------------------------------------
+    # Creer une note texte
+    # ------------------------------------------------------------------
+    def _creer_note(self):
+        """Demande un nom, puis ouvre l'editeur de note."""
+        defaut = "note_{}.txt".format(datetime.now().strftime("%Y%m%d_%H%M"))
+        self._saisie("NOUVELLE NOTE", defaut, self._editer_note)
+
+    def _editer_note(self, nom):
+        """Editeur de texte simple, enregistre dans le dossier courant."""
+        if not nom.lower().endswith((".txt", ".md")):
+            nom += ".txt"
+        nom = "".join(c for c in nom if c not in '/\\:*?"<>|').strip()
+        chemin = self.dossier_courant / nom
+
+        contenu_initial = ""
+        if chemin.exists():
+            try:
+                contenu_initial = chemin.read_text(encoding="utf-8",
+                                                   errors="replace")
+            except Exception:
+                pass
+
+        boite = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
+        champ = TextInput(text=contenu_initial, multiline=True,
+                          font_name=fonts.FONT_MONO, font_size=dp(12),
+                          background_color=theme_manager.get_with_alpha("surface", 0.9),
+                          foreground_color=theme_manager.get_color("text"),
+                          cursor_color=theme_manager.get_color("primary"))
+        boite.add_widget(champ)
+
+        popup = Popup(title=nom, content=boite, size_hint=(0.92, 0.85),
+                      separator_height=dp(1))
+        rangee = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(10))
+
+        annuler = NeonButton(text="ANNULER", corner_radius=dp(2))
+        annuler.bind(on_press=lambda *_a: popup.dismiss())
+        enregistrer = NeonButton(text="ENREGISTRER", corner_radius=dp(2))
+
+        def _sauver(*_a):
+            popup.dismiss()
+            try:
+                chemin.write_text(champ.text, encoding="utf-8")
+                self.rafraichir()
+                self._message("NOTE ENREGISTRÉE : {}".format(nom))
+            except Exception as error:
+                print("[fichiers] ecriture impossible :", error)
+                self._message("ENREGISTREMENT IMPOSSIBLE")
+        enregistrer.bind(on_press=_sauver)
+
+        rangee.add_widget(annuler)
+        rangee.add_widget(enregistrer)
+        boite.add_widget(rangee)
+        popup.open()
+
+    # ------------------------------------------------------------------
+    # Importer depuis l'exterieur (cle USB, dossier du systeme)
+    # ------------------------------------------------------------------
+    def _sources_externes(self):
+        """Liste les emplacements ou chercher des fichiers a importer."""
+        sources = []
+        # Cles USB et disques montes
+        for base in ("/media", "/mnt", "/run/media"):
+            b = Path(base)
+            if b.exists():
+                try:
+                    for element in b.iterdir():
+                        if element.is_dir():
+                            sources.append(element)
+                        # /media/<utilisateur>/<cle>
+                        if element.is_dir():
+                            for sous in element.iterdir():
+                                if sous.is_dir():
+                                    sources.append(sous)
+                except Exception:
+                    pass
+        # Dossiers personnels classiques
+        for nom in ("Téléchargements", "Downloads", "Images", "Pictures",
+                    "Documents", "Bureau", "Desktop"):
+            d = Path.home() / nom
+            if d.is_dir():
+                sources.append(d)
+        # Sans doublons, ordre conserve
+        vues, uniques = set(), []
+        for s in sources:
+            if str(s) not in vues:
+                vues.add(str(s))
+                uniques.append(s)
+        return uniques
+
+    def _importer(self):
+        """Propose des emplacements externes, puis les fichiers a importer."""
+        sources = self._sources_externes()
+        boite = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(12))
+        popup = Popup(title="IMPORTER DEPUIS", content=boite,
+                      size_hint=(0.85, 0.8), separator_height=dp(1))
+
+        if not sources:
+            boite.add_widget(Label(
+                text="AUCUNE SOURCE TROUVÉE\n\nBranchez une clé USB\n"
+                     "ou placez des fichiers dans Téléchargements",
+                font_name=fonts.FONT_MONO, font_size=dp(10),
+                color=theme_manager.get_color("text_secondary"),
+                halign="center"))
+        else:
+            defilement = ScrollView()
+            liste = BoxLayout(orientation="vertical", spacing=dp(5),
+                              size_hint_y=None)
+            liste.bind(minimum_height=liste.setter("height"))
+            for source in sources[:14]:
+                bouton = NeonButton(text=str(source), size_hint_y=None,
+                                    height=dp(40), corner_radius=dp(2))
+                bouton.bind(on_press=lambda _b, s=source: (
+                    popup.dismiss(), self._choisir_fichier(s)))
+                liste.add_widget(bouton)
+            defilement.add_widget(liste)
+            boite.add_widget(defilement)
+
+        fermer = NeonButton(text="FERMER", size_hint_y=None, height=dp(42),
+                            corner_radius=dp(2))
+        fermer.bind(on_press=lambda *_a: popup.dismiss())
+        boite.add_widget(fermer)
+        popup.open()
+
+    def _choisir_fichier(self, source):
+        """Liste les fichiers d'une source externe et en importe un."""
+        try:
+            fichiers = sorted([f for f in source.iterdir() if f.is_file()],
+                              key=lambda p: p.name.lower())[:60]
+        except Exception as error:
+            print("[fichiers] lecture source impossible :", error)
+            self._message("SOURCE ILLISIBLE")
+            return
+
+        boite = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(12))
+        popup = Popup(title=str(source), content=boite, size_hint=(0.9, 0.85),
+                      separator_height=dp(1))
+
+        if not fichiers:
+            boite.add_widget(Label(text="AUCUN FICHIER ICI",
+                                   font_name=fonts.FONT_MONO, font_size=dp(10),
+                                   color=theme_manager.get_color("text_secondary")))
+        else:
+            defilement = ScrollView()
+            liste = BoxLayout(orientation="vertical", spacing=dp(4),
+                              size_hint_y=None)
+            liste.bind(minimum_height=liste.setter("height"))
+            for fichier in fichiers:
+                etiquette = "{}   ({})".format(
+                    fichier.name, _taille_lisible(fichier.stat().st_size))
+                bouton = NeonButton(text=etiquette, size_hint_y=None,
+                                    height=dp(38), corner_radius=dp(2))
+                bouton.bind(on_press=lambda _b, f=fichier: (
+                    popup.dismiss(), self.importer_fichier(f)))
+                liste.add_widget(bouton)
+            defilement.add_widget(liste)
+            boite.add_widget(defilement)
+
+        fermer = NeonButton(text="FERMER", size_hint_y=None, height=dp(42),
+                            corner_radius=dp(2))
+        fermer.bind(on_press=lambda *_a: popup.dismiss())
+        boite.add_widget(fermer)
+        popup.open()
+
+    def importer_fichier(self, source):
+        """Copie un fichier externe dans le dossier courant."""
+        cible = self.dossier_courant / source.name
+        if cible.exists():
+            base, ext = source.stem, source.suffix
+            n = 2
+            while cible.exists():
+                cible = self.dossier_courant / "{} ({}){}".format(base, n, ext)
+                n += 1
+        try:
+            shutil.copy2(source, cible)
+            self.rafraichir()
+            self._message("IMPORTÉ : {}".format(cible.name))
+        except Exception as error:
+            print("[fichiers] import impossible :", error)
+            self._message("IMPORT IMPOSSIBLE")
 
     def _message(self, texte, duree=2.5):
         """Affiche un message temporaire dans le bandeau du bas."""

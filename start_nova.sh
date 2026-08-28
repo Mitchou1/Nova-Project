@@ -63,6 +63,39 @@ ensure_container \
     "8002" \
     "/status"
 
+# /status répond dès que le serveur HTTP de Valhalla est lancé, mais ses
+# tuiles routières peuvent encore être en cours de construction en arrière
+# plan (long avec un extrait pays) : un calcul d'itinéraire pendant cette
+# fenêtre renvoie un trajet dégradé à 2 points, affiché comme une ligne
+# droite dans l'app — bug reel observe, corrige jusqu'ici en redemarrant le
+# conteneur a la main. On attend ici que Valhalla puisse VRAIMENT calculer
+# un trajet (test sur deux points proches de Tunis) avant de lancer l'app.
+wait_for_valhalla_routing() {
+    info "Vérification que Valhalla peut calculer un itinéraire (tuiles chargées)..."
+    local test_body='{"locations":[{"lat":36.8065,"lon":10.1815},{"lat":36.815,"lon":10.19}],"costing":"auto"}'
+    local waited=0
+    while true; do
+        local response
+        response=$(curl -s -X POST -H "Content-Type: application/json" \
+            -d "$test_body" "http://localhost:8002/route" 2>/dev/null)
+        if echo "$response" | grep -q '"legs"'; then
+            info "Valhalla peut calculer des itinéraires."
+            return 0
+        fi
+        sleep 5
+        waited=$((waited + 5))
+        if [ "$waited" -ge 600 ]; then
+            warn "Valhalla ne calcule toujours pas d'itinéraire après 10 min."
+            warn "Les tuiles routières sont peut-être toujours en cours de construction — vérifie : sudo docker logs nova-valhalla"
+            return 1
+        fi
+        if [ $((waited % 30)) -eq 0 ]; then
+            warn "Valhalla construit encore ses tuiles routières... (${waited}s)"
+        fi
+    done
+}
+wait_for_valhalla_routing
+
 ensure_container \
     "nova-nominatim" \
     "sudo docker run -d --name nova-nominatim -e PBF_PATH=/nominatim/data/tunisia.osm.pbf -p 8088:8080 -v '${MAPS_DATA}':/nominatim/data --shm-size=1g mediagis/nominatim:5.1" \

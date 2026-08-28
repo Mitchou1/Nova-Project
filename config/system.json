@@ -7,7 +7,7 @@
         "rotation": 0
     },
     "theme": "undercover",
-    "language": "fr",
+    "language": "en",
     "wifi": {
         "auto_connect": true
     },
@@ -16,8 +16,8 @@
         "auto_sleep_minutes": 5
     },
     "audio": {
-        "volume": 29,
-        "brightness": 97
+        "volume": 47,
+        "brightness": 30
     },
     "ui": {
         "particles": "auto",
@@ -28,6 +28,7 @@
     "map": {
         "provider": "local",
         "style": "basic-preview",
+        "api_key": "",
         "online": true,
         "local_url": "http://localhost:8080/styles/nova-streets/{z}/{x}/{y}.png"
     },
@@ -36,5 +37,7 @@
         "llm_model": "qwen2.5-3b-instruct-q5_k_m.gguf",
         "tts_voice": "fr_FR-siwis-medium.onnx"
     },
-    "bluetooth_enabled": true
+    "bluetooth_enabled": false,
+    "notifications": true,
+    "power_saving": true
 }

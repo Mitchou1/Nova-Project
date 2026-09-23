@@ -25,6 +25,16 @@ from kivy.config import Config as KivyConfig
 KivyConfig.set("input", "mouse", "mouse,multitouch_on_demand")
 KivyConfig.set("kivy", "exit_on_escape", "1")
 
+# Clavier tactile : le mode "system" par defaut compte sur le clavier virtuel
+# du bureau, qui s'ouvre mal ou pas du tout au-dessus d'une app Kivy plein
+# ecran. Sur la Pi (ecran tactile, pas de clavier physique), on utilise le
+# clavier integre de Kivy, ancre en bas de l'ecran, qui s'ouvre des qu'un
+# champ de texte (Maps, Assistant, Terminal...) recoit le focus.
+# Reglable dans system.json : "screen": {"virtual_keyboard": "auto"|true|false}
+_virtual_keyboard = get_config().get("screen", {}).get("virtual_keyboard", "auto")
+if _virtual_keyboard is True or (_virtual_keyboard == "auto" and is_raspberry_pi()):
+    KivyConfig.set("kivy", "keyboard_mode", "dock")
+
 from kivy.app import App                                          # noqa: E402
 import time
 from kivy.clock import Clock

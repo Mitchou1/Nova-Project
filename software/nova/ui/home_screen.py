@@ -41,6 +41,7 @@ ICON_BY_APP = {
     "settings": "settings",
     "camera": "photo_camera",     # manquait : la tuile affichait du tofu
     "files": "folder",
+    "terminal": "terminal",
 }
 
 # Ordre de bascule des modes (bouton palette)

@@ -35,6 +35,16 @@ _virtual_keyboard = get_config().get("screen", {}).get("virtual_keyboard", "auto
 if _virtual_keyboard is True or (_virtual_keyboard == "auto" and is_raspberry_pi()):
     KivyConfig.set("kivy", "keyboard_mode", "dock")
 
+# Double appui sur la Pi : la config Kivy par defaut lit l'ecran tactile deux
+# fois — via SDL (le bureau convertit le toucher en souris, provider "mouse")
+# ET directement via probesysfs/MTD (/dev/input/eventX). Chaque appui arrivait
+# en double : deux lettres par touche du clavier virtuel. On garde seulement
+# SDL, dont les coordonnees suivent toujours la fenetre.
+if is_raspberry_pi():
+    for _option in KivyConfig.options("input"):
+        if KivyConfig.get("input", _option, raw=True).startswith("probesysfs"):
+            KivyConfig.remove_option("input", _option)
+
 from kivy.app import App                                          # noqa: E402
 import time
 from kivy.clock import Clock

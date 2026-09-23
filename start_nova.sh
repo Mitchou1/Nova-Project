@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-NOVA_DIR="$HOME/Bureau/nova2"
+# Dossier du projet = dossier de ce script (marche sur le PC ~/Bureau/nova2
+# comme sur la Pi ~/nova2, quel que soit l'endroit du clone).
+NOVA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAPS_DATA="$NOVA_DIR/maps_data"
 VALHALLA_DATA="$NOVA_DIR/valhalla_data"
 

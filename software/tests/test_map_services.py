@@ -222,9 +222,60 @@ def test_boucle_de_plantage_signalee_sans_relance(tmp_path, monkeypatch):
     # Cas réel sur la Pi : Nominatim en « restarting » permanent
     docker = FakeDocker({"nova-x": {"status": "restarting", "policy": "unless-stopped"}})
     svc = ms.MapServices([_spec(tmp_path)], docker=docker)
-    monkeypatch.setattr(svc, "_derniere_erreur",
-                        lambda spec: "FATAL: database \"nominatim\" already exists")
+    monkeypatch.setattr(svc, "_journal",
+                        lambda spec: ["FATAL: database \"nominatim\" already exists"])
     svc.check_now()
     state, reason = svc.status("tiles")
     assert state == ms.DOWN and "plante en boucle" in reason and "already exists" in reason
     assert not any(c[0] in ("start", "rm", "run") for c in docker.calls)
+
+
+JOURNAL_CORROMPU = [
+    "LOG:  database system was interrupted; last known up at 2026-09-23 21:18:49 UTC",
+    "LOG:  invalid checkpoint record",
+    "PANIC:  could not locate a valid checkpoint record",
+    "FATAL: Creating new database failed.",
+]
+
+
+def _spec_nominatim(tmp_path):
+    spec = _spec(tmp_path)
+    spec.volumes = ["nova-nominatim-db"]
+    spec.signatures_corruption = ["could not locate a valid checkpoint record"]
+    spec.demarrage_long = "import en cours — ne pas éteindre le Pi"
+    return spec
+
+
+def test_base_corrompue_reparee_automatiquement(tmp_path, monkeypatch):
+    # Cas réel de la Pi : import interrompu -> PostgreSQL irrécupérable
+    docker = FakeDocker({"nova-x": {"status": "restarting", "policy": "unless-stopped"}})
+    svc = ms.MapServices([_spec_nominatim(tmp_path)], docker=docker)
+    monkeypatch.setattr(svc, "_journal", lambda spec: JOURNAL_CORROMPU)
+    svc.check_now()
+    commandes = [c[:2] for c in docker.calls]
+    assert ["rm", "-f"] in commandes                       # conteneur supprimé
+    assert ["volume", "rm", "-f", "nova-nominatim-db"] in docker.calls   # base supprimée
+    assert docker.containers["nova-x"]["status"] == "running"             # recréé
+    state, reason = svc.status("tiles")
+    assert state == ms.STARTING and "ne pas éteindre" in reason
+
+
+def test_reparation_au_plus_une_fois_par_heure(tmp_path, monkeypatch):
+    docker = FakeDocker({"nova-x": {"status": "restarting", "policy": "unless-stopped"}})
+    svc = ms.MapServices([_spec_nominatim(tmp_path)], docker=docker)
+    monkeypatch.setattr(svc, "_journal", lambda spec: JOURNAL_CORROMPU)
+    svc.check_now()
+    docker.containers["nova-x"]["status"] = "restarting"   # nouvel échec
+    docker.calls.clear()
+    svc.check_now()
+    assert not any(c[0] == "run" for c in docker.calls)    # pas de 2e réimport
+    assert svc.status("tiles")[0] == ms.DOWN
+
+
+def test_import_long_jamais_declare_en_panne(tmp_path, monkeypatch):
+    docker = FakeDocker({"nova-x": {"status": "running", "policy": "unless-stopped"}})
+    svc = ms.MapServices([_spec_nominatim(tmp_path)], docker=docker)
+    monkeypatch.setattr(ms, "STARTUP_TIMEOUT", 0)          # délai dépassé
+    svc.check_now()
+    state, reason = svc.status("tiles")
+    assert state == ms.STARTING and "ne pas éteindre" in reason

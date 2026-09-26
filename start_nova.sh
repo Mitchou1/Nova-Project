@@ -348,13 +348,15 @@ start_services() {
     # indisponible (sauf si "allow_online_fallback" est activé).
     if ensure_container \
         "nova-nominatim" \
-        "$DOCKER run -d --name nova-nominatim -e PBF_PATH=/nominatim/data/tunisia.osm.pbf -p 8088:8080 -v '${MAPS_DATA}':/nominatim/data --shm-size=1g mediagis/nominatim:5.1" \
+        "$DOCKER run -d --restart unless-stopped --name nova-nominatim -e PBF_PATH=/nominatim/data/tunisia.osm.pbf -p 8088:8080 -v '${MAPS_DATA}':/nominatim/data -v nova-nominatim-db:/var/lib/postgresql/16/main --shm-size=1g mediagis/nominatim:5.1" \
         "$MAPS_DATA/tunisia.osm.pbf" \
         "http://localhost:8088/search?q=tunis&format=json" \
         0; then
         info "nova-nominatim est prêt (recherche d'adresses hors ligne)."
     else
         warn "nova-nominatim pas encore prêt (1er import : 30 à 90 min sur Pi)."
+        warn "NE PAS éteindre la Pi pendant l'import : une coupure corrompt la base"
+        warn "(NOVA la répare alors tout seul, mais tout l'import est à refaire)."
         warn "En attendant, Maps indique que la recherche d'adresses est indisponible."
     fi
 }

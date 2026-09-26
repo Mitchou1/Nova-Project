@@ -53,6 +53,10 @@ RESTART_COOLDOWN = 60
 STARTUP_TIMEOUT = 600
 
 TILE_STYLE = "nova-streets"
+VOLUME_NOMINATIM = "nova-nominatim-db"
+# Une réparation automatique au plus par heure : si l'import est de nouveau
+# interrompu, on ne boucle pas sur des réimports.
+REPARATION_COOLDOWN = 3600
 
 
 def _http_get(url, timeout=2):
@@ -115,7 +119,8 @@ class ServiceSpec:
     """Description d'un conteneur : comment le créer et le vérifier."""
 
     def __init__(self, key, label, container, image, run_args, required,
-                 check, image_cmd=None, stateless=False):
+                 check, image_cmd=None, stateless=False, volumes=(),
+                 signatures_corruption=(), demarrage_long=""):
         self.key = key
         self.label = label
         self.container = container
@@ -127,6 +132,14 @@ class ServiceSpec:
         # Sans données internes : on peut le recréer s'il est mal configuré.
         # Jamais vrai pour Nominatim (sa base serait perdue).
         self.stateless = stateless
+        # Volumes Docker nommés qui contiennent les données du service
+        self.volumes = list(volumes)
+        # Messages de journal qui prouvent des données IRRÉCUPÉRABLES : le
+        # seul remède est alors de tout recréer (volumes compris).
+        self.signatures_corruption = list(signatures_corruption)
+        # Démarrage qui peut légitimement durer très longtemps (import) :
+        # message affiché, et jamais déclaré « en panne » pour lenteur.
+        self.demarrage_long = demarrage_long
 
 
 def default_specs(root=ROOT_DIR):
@@ -157,9 +170,22 @@ def default_specs(root=ROOT_DIR):
             "mediagis/nominatim:5.1",
             ["-e", "PBF_PATH=/nominatim/data/tunisia.osm.pbf",
              "-p", "8088:8080", "-v", "{}:/nominatim/data".format(maps),
+             # Base PostgreSQL dans un volume nommé : une fois l'import fini,
+             # recréer ou mettre à jour le conteneur ne réimporte plus rien.
+             "-v", "{}:/var/lib/postgresql/16/main".format(VOLUME_NOMINATIM),
              "--shm-size=1g"],
             [os.path.join(maps, "tunisia.osm.pbf")],
-            _check_nominatim),
+            _check_nominatim,
+            volumes=[VOLUME_NOMINATIM],
+            # Cas réel sur la Pi : Pi éteinte PENDANT l'import (l'image coupe
+            # fsync pour importer plus vite) -> base PostgreSQL irrécupérable,
+            # le conteneur plantait en boucle depuis des jours.
+            signatures_corruption=["could not locate a valid checkpoint record",
+                                   "invalid checkpoint record",
+                                   "invalid primary checkpoint record",
+                                   "database files are incompatible with server"],
+            demarrage_long=("import de la base d'adresses en cours (30 à 90 min "
+                            "sur la Pi) — ne pas éteindre le Pi")),
     ]
 
 
@@ -208,6 +234,7 @@ class _State:
         self.reason = "vérification en cours"
         self.since = time.time()
         self.last_restart = 0.0
+        self.derniere_reparation = 0.0
         self.policy_ok = False     # politique de redémarrage vérifiée ?
 
 
@@ -300,14 +327,19 @@ class MapServices:
                 self._set(st, STARTING, "conteneur créé, démarrage...")
                 return
             self._ensure_restart_policy(spec)
-            if status == "restarting":
-                # Boucle de plantage (observé sur la Pi avec Nominatim) :
-                # Docker le relance déjà sans cesse ; un « docker start » de
-                # plus n'y changerait rien. On affiche la VRAIE cause, lue
-                # dans son journal, au lieu de « ne répond pas ».
-                cause = self._derniere_erreur(spec)
-                self._set(st, DOWN, "plante en boucle au démarrage — " + cause)
-                return
+            if status == "restarting" or (status != "running" and spec.signatures_corruption):
+                journal = self._journal(spec)
+                if self._corrompu(spec, journal) and \
+                        time.time() - st.derniere_reparation >= REPARATION_COOLDOWN:
+                    self._reparer(spec, st)
+                    return
+                if status == "restarting":
+                    # Boucle de plantage : Docker le relance déjà sans cesse ;
+                    # un « docker start » de plus n'y changerait rien. On
+                    # affiche la VRAIE cause, lue dans son journal.
+                    self._set(st, DOWN, "plante en boucle au démarrage — "
+                              + self._cause(spec, journal))
+                    return
             if status != "running":
                 if time.time() - st.last_restart >= RESTART_COOLDOWN:
                     st.last_restart = time.time()
@@ -331,6 +363,10 @@ class MapServices:
             return
 
         # Conteneur en marche mais service pas encore opérationnel
+        if spec.demarrage_long and st.state != DOWN:
+            # Import très long : ni panne, ni « ne répond pas »
+            self._set(st, STARTING, spec.demarrage_long)
+            return
         waited = time.time() - st.since
         if st.state == DOWN or waited > STARTUP_TIMEOUT:
             self._set(st, DOWN, why)
@@ -348,20 +384,51 @@ class MapServices:
                 return None
             raise
 
-    def _derniere_erreur(self, spec):
-        """Dernière ligne significative du journal du conteneur (diagnostic)."""
+    def _journal(self, spec):
+        """40 dernières lignes du journal du conteneur (diagnostic)."""
         try:
             sortie = subprocess.run(
                 ["docker", "logs", "--tail", "40", spec.container],
                 capture_output=True, text=True, timeout=10)
-            lignes = [l.strip() for l in (sortie.stdout + sortie.stderr).splitlines() if l.strip()]
+            return [l.strip() for l in (sortie.stdout + sortie.stderr).splitlines() if l.strip()]
         except (OSError, subprocess.TimeoutExpired):
-            return "journal illisible (docker logs {})".format(spec.container)
-        for ligne in reversed(lignes):
-            if any(m in ligne.lower() for m in ("error", "erreur", "fatal", "failed",
-                                                 "killed", "no such", "denied", "exists")):
+            return []
+
+    @staticmethod
+    def _cause(spec, journal):
+        """Ligne la plus parlante du journal."""
+        for ligne in reversed(journal):
+            if any(m in ligne.lower() for m in ("panic", "fatal", "error", "failed",
+                                                 "killed", "no such", "denied")):
                 return ligne[:160]
-        return lignes[-1][:160] if lignes else "journal vide (docker logs {})".format(spec.container)
+        return journal[-1][:160] if journal else "journal illisible (docker logs {})".format(
+            spec.container)
+
+    def _derniere_erreur(self, spec):
+        return self._cause(spec, self._journal(spec))
+
+    @staticmethod
+    def _corrompu(spec, journal):
+        texte = "\n".join(journal).lower()
+        return any(sig.lower() in texte for sig in spec.signatures_corruption)
+
+    def _reparer(self, spec, st):
+        """Données irrécupérables : on recrée conteneur ET volumes. C'est le
+        seul remède (PostgreSQL refuse d'ouvrir la base), et il ne détruit
+        rien d'utilisable. Le réimport repart de zéro."""
+        st.derniere_reparation = time.time()
+        print("[cartes] {} : base corrompue (import interrompu) — suppression "
+              "et réimport complet".format(spec.container))
+        self._docker(["rm", "-f", spec.container])
+        for volume in spec.volumes:
+            try:
+                self._docker(["volume", "rm", "-f", volume])
+            except DockerError:
+                pass
+        self._create(spec)
+        st.last_restart = time.time()
+        self._set(st, STARTING, "base corrompue réparée : " + (
+            spec.demarrage_long or "réimport en cours"))
 
     def _misconfigured(self, spec):
         """Vrai si un conteneur SANS données tourne avec d'autres arguments

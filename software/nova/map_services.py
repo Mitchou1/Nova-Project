@@ -300,6 +300,14 @@ class MapServices:
                 self._set(st, STARTING, "conteneur créé, démarrage...")
                 return
             self._ensure_restart_policy(spec)
+            if status == "restarting":
+                # Boucle de plantage (observé sur la Pi avec Nominatim) :
+                # Docker le relance déjà sans cesse ; un « docker start » de
+                # plus n'y changerait rien. On affiche la VRAIE cause, lue
+                # dans son journal, au lieu de « ne répond pas ».
+                cause = self._derniere_erreur(spec)
+                self._set(st, DOWN, "plante en boucle au démarrage — " + cause)
+                return
             if status != "running":
                 if time.time() - st.last_restart >= RESTART_COOLDOWN:
                     st.last_restart = time.time()
@@ -339,6 +347,21 @@ class MapServices:
             if "no such" in str(err).lower():
                 return None
             raise
+
+    def _derniere_erreur(self, spec):
+        """Dernière ligne significative du journal du conteneur (diagnostic)."""
+        try:
+            sortie = subprocess.run(
+                ["docker", "logs", "--tail", "40", spec.container],
+                capture_output=True, text=True, timeout=10)
+            lignes = [l.strip() for l in (sortie.stdout + sortie.stderr).splitlines() if l.strip()]
+        except (OSError, subprocess.TimeoutExpired):
+            return "journal illisible (docker logs {})".format(spec.container)
+        for ligne in reversed(lignes):
+            if any(m in ligne.lower() for m in ("error", "erreur", "fatal", "failed",
+                                                 "killed", "no such", "denied", "exists")):
+                return ligne[:160]
+        return lignes[-1][:160] if lignes else "journal vide (docker logs {})".format(spec.container)
 
     def _misconfigured(self, spec):
         """Vrai si un conteneur SANS données tourne avec d'autres arguments

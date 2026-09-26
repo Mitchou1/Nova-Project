@@ -751,6 +751,10 @@ _VERBES_ON = ("active", "activer", "activez", "allume", "allumer", "demarre",
               "demarrer", "mets", "remets", "ouvre", "lance")
 
 _REGLES_RAPIDES_ETENDUES = [
+    # --- quitter NOVA (retour au bureau du Pi) : phrase explicite seulement ---
+    (re.compile(r"^(?:quitte[rz]?|ferme[rz]?|arrete[rz]?|eteins|sors? de)\s+"
+                r"(?:nova|l.application|l.appli|l.assistant)\s*[.!]?$"),
+     lambda m, t: {"action": "quitter_nova"}),
     # --- météo : réponse Open-Meteo via la recherche web (« quelle est la
     # température à Paris » est une question météo, pas le capteur) ---
     (re.compile(r"\b(?:meteo|quel temps|temps qu.il (?:fait|fera)|va.t.il pleuvoir|"
@@ -1027,6 +1031,8 @@ def _dispatch_action(data, app=None):
             data.get("fonction") or "celle-ci", data.get("conseil") or "")
     if action == "petite_phrase":
         return _petite_phrase(data)
+    if action == "quitter_nova":
+        return _quitter_nova()
     if action == "voir_evenements":
         return _list_events(data, app)
     if action == "supprimer_evenements":
@@ -1942,6 +1948,18 @@ def _battery():
     if st.get("en_charge") is not None:
         etat = ", en charge" if st["en_charge"] else ", sur batterie"
     return "Batterie à {:.0f} %{}.".format(st["pourcent"], etat)
+
+
+def _quitter_nova():
+    """Ferme NOVA et revient au bureau du Pi (après avoir affiché/dit la
+    réponse : délai de 2,5 s)."""
+    try:
+        from apps.settings.app import quitter_nova
+        quitter_nova(delai=2.5)
+    except Exception as error:
+        print("[actions] fermeture impossible :", error)
+        return "Je n'ai pas pu fermer NOVA."
+    return "Je ferme NOVA. À bientôt !"
 
 
 def _restart():

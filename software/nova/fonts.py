@@ -97,6 +97,7 @@ ICONS = {
     "fiber_manual_record": "\ue061",
     "notifications": "\ue7f5",
     "restart_alt": "\uf053",
+    "logout": "\ue9ba",          # quitter NOVA vers le bureau du Pi
     "speed": "\ue9e4",
     "stop": "\ue047",
     "today": "\ue8df",

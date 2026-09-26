@@ -14,7 +14,7 @@ from kivy.metrics import dp
 from kivy.animation import Animation
 from kivy.properties import StringProperty, BooleanProperty
 
-from apps.base_app import BaseApp
+from apps.base_app import BaseApp, CIBLE_MIN, haut_contenu, hauteur_relative
 from nova.ui.theme import theme_manager
 from nova.ui.widgets import GlassCard, NeonButton, WaveformVisualizer
 
@@ -82,28 +82,52 @@ class ChatBubble(GlassCard):
             self._accent_bar = Rectangle()
         self.bind(pos=self._refresh_accent, size=self._refresh_accent)
 
-        # Libellé de l'émetteur — label-caps
-        self.add_widget(Label(
+        # Libellé de l'émetteur — label-caps, aligné à gauche au-dessus du
+        # texte (sans text_size, halign était ignoré : libellé décalé)
+        emetteur = Label(
             text=" ".join(libelle),          # letter-spacing simulé
             font_name=_f.FONT_MONO, font_size=dp(8),
             color=accent,
-            pos_hint={'x': 0.035, 'top': 0.95},
-            size_hint=(0.4, 0.26),
+            size_hint=(None, None), height=dp(14),
             halign='left', valign='middle',
-        ))
+        )
+        self._emetteur = emetteur
+        self.add_widget(emetteur)
 
-        # Texte — aligné à gauche (il était centré, d'où un rendu bancal)
+        # Texte — aligné à gauche. La bulle prend la hauteur RÉELLE du texte
+        # rendu (retours à la ligne compris) et la suit mot à mot pendant la
+        # réponse en direct. Avant : hauteur estimée une fois pour toutes
+        # (1 ligne / 60 caractères), et une bulle de réponse créée vide
+        # restait à une seule ligne -> le texte débordait de la bulle.
         self.text_label = Label(
             text=text,
             font_name=_f.FONT_DISPLAY, font_size=dp(13),
             color=theme_manager.get_color("text"),
-            pos_hint={'x': 0.035, 'y': 0.06},
-            size_hint=(0.93, 0.62),
+            size_hint=(None, None),
             halign='left', valign='top',
         )
-        self.text_label.bind(
-            size=lambda w, s: setattr(w, "text_size", (s[0], s[1])))
+        self.text_label.bind(texture_size=self._ajuster_hauteur)
+        self.bind(pos=self._placer_texte, size=self._placer_texte)
         self.add_widget(self.text_label)
+
+    MARGE_HAUT = dp(22)       # place du libellé « NOVA » / « VOUS »
+    MARGE_BAS = dp(8)
+
+    def _placer_texte(self, *_a):
+        em = self._emetteur
+        em.width = self.width * 0.93
+        em.text_size = (em.width, em.height)
+        em.pos = (self.x + self.width * 0.035, self.top - dp(4) - em.height)
+        lbl = self.text_label
+        lbl.width = self.width * 0.93
+        lbl.text_size = (lbl.width, None)     # largeur fixe, hauteur libre
+        lbl.pos = (self.x + self.width * 0.035, self.y + self.MARGE_BAS)
+
+    def _ajuster_hauteur(self, *_a):
+        hauteur_texte = max(self.text_label.texture_size[1], dp(16))
+        self.text_label.height = hauteur_texte
+        self.height = hauteur_texte + self.MARGE_HAUT + self.MARGE_BAS
+        self._placer_texte()
 
     def _refresh_accent(self, *_args):
         if hasattr(self, "_accent_bar"):
@@ -113,6 +137,8 @@ class ChatBubble(GlassCard):
 
 class AssistantApp(BaseApp):
     """Application Assistant IA — interface complète."""
+
+    HAUTEUR_PANNEAU = dp(150)     # panneau vocal (micro + saisie), en bas
 
     app_name = "NOVA"
     app_icon = "smart_toy"
@@ -193,20 +219,31 @@ class AssistantApp(BaseApp):
             minimum_height=self.chat_container.setter('height')
         )
 
+        # Conversation : de l'en-tête jusqu'au-dessus du panneau vocal. Avant,
+        # elle descendait DERRIÈRE ce panneau (bulles cachées par le micro).
+        haut = haut_contenu()
+        bas_conversation = 0.02 + hauteur_relative(self.HAUTEUR_PANNEAU + dp(8))
         scroll = ScrollView(
-            size_hint=(1, 0.65),
-            pos_hint={'x': 0, 'top': 0.88}
+            size_hint=(1, haut - bas_conversation),
+            pos_hint={'x': 0, 'top': haut}
         )
         scroll.add_widget(self.chat_container)
+        self.chat_scroll = scroll
+        # La conversation grandit (nouvelle bulle, ou réponse qui s'allonge
+        # mot à mot) : on reste calé sur le dernier message.
+        self.chat_container.bind(height=lambda *_a: setattr(scroll, "scroll_y", 0))
         main.add_widget(scroll)
 
         # Message de bienvenue
         self._add_message("Bonjour ! Je suis NOVA, votre assistant personnel. Comment puis-je vous aider ?", is_user=False)
 
         # ─── ZONE CONTRÔLE ─────────────────────────────────────────
+        # Panneau compact (230 -> 150 px) : il occupait près de la moitié de
+        # l'écran. Du bas vers le haut : saisie (44 px), statut, micro (56 px),
+        # onde sonore.
         control_card = GlassCard(
             size_hint=(0.95, None),
-            height=dp(230),
+            height=self.HAUTEUR_PANNEAU,
             pos_hint={'center_x': 0.5, 'y': 0.02},
             corner_radius=dp(2)
         )
@@ -214,8 +251,8 @@ class AssistantApp(BaseApp):
         # Visualiseur d'onde
         self.waveform = WaveformVisualizer(
             size_hint=(0.8, None),
-            height=dp(40),
-            pos_hint={'center_x': 0.5, 'top': 0.85},
+            height=dp(20),
+            pos_hint={'center_x': 0.5, 'top': 0.98},
             bar_count=20,
             amplitude=0.2
         )
@@ -226,20 +263,21 @@ class AssistantApp(BaseApp):
             text=self.status_text,
             font_size=dp(12),
             color=theme_manager.get_color("text_secondary"),
-            pos_hint={'center_x': 0.5, 'top': 0.30},
-            size_hint=(0.9, 0.10),
+            pos_hint={'center_x': 0.5, 'y': 0.34},
+            size_hint=(0.9, 0.12),
             halign='center', valign='middle',
         )
         control_card.add_widget(self.status_label)
 
         # Bouton principal
+        # Icône seule : à 56 px, « PARLER » se coupait en deux lignes ; le
+        # statut juste en dessous (« Appuyez et parlez ») suffit.
         self.talk_btn = NeonButton(
             icon="mic",
-            text="Parler",
             size_hint=(None, None),
-            size=(dp(70), dp(70)),
-            pos_hint={'center_x': 0.5, 'y': 0.32},
-            corner_radius=dp(35)
+            size=(dp(56), dp(56)),
+            pos_hint={'center_x': 0.5, 'y': 0.47},
+            corner_radius=dp(28)
         )
         self.talk_btn.bind(on_press=self._on_talk_press)
         self.talk_btn.bind(on_release=self._on_talk_release)
@@ -247,8 +285,8 @@ class AssistantApp(BaseApp):
 
         # ─── CHAMP DE SAISIE TEXTE (pour taper les commandes) ─────
         input_row = BoxLayout(
-            size_hint=(0.9, None), height=dp(44), spacing=dp(6),   # cible tactile >= 44 px
-            pos_hint={'center_x': 0.5, 'y': 0.04}
+            size_hint=(0.9, None), height=CIBLE_MIN, spacing=dp(6),   # cible tactile >= 44 px
+            pos_hint={'center_x': 0.5, 'y': 0.03}
         )
         from nova import fonts as _f
         # Charte NOVA : "underlined inputs" — pas de boite, juste un filet
@@ -325,12 +363,8 @@ class AssistantApp(BaseApp):
 
     def _add_message(self, text, is_user=False):
         """Ajoute un message à la conversation. Renvoie le Label (pour maj)."""
+        # La bulle calcule elle-même sa hauteur d'après le texte rendu
         bubble = ChatBubble(text, is_user)
-
-        # Ajuster la hauteur selon le texte (place pour le libelle emetteur
-        # en label-caps + les lignes du message)
-        lignes = max(1, len(text) // 60 + 1)
-        bubble.height = dp(34 + lignes * 19)
 
         self.chat_container.add_widget(bubble)
         self.conversation.append({"text": text, "is_user": is_user})

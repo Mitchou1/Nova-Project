@@ -216,3 +216,15 @@ def test_route_hors_ligne_sans_repli_internet(monkeypatch):
                         lambda *a, **k: appels.append("ors"))
     assert navigation.route(36.8, 10.1, 36.9, 10.2) is None
     assert appels == []
+
+
+def test_boucle_de_plantage_signalee_sans_relance(tmp_path, monkeypatch):
+    # Cas réel sur la Pi : Nominatim en « restarting » permanent
+    docker = FakeDocker({"nova-x": {"status": "restarting", "policy": "unless-stopped"}})
+    svc = ms.MapServices([_spec(tmp_path)], docker=docker)
+    monkeypatch.setattr(svc, "_derniere_erreur",
+                        lambda spec: "FATAL: database \"nominatim\" already exists")
+    svc.check_now()
+    state, reason = svc.status("tiles")
+    assert state == ms.DOWN and "plante en boucle" in reason and "already exists" in reason
+    assert not any(c[0] in ("start", "rm", "run") for c in docker.calls)

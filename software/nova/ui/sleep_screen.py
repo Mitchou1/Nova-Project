@@ -46,18 +46,30 @@ class ScanRing(Widget):
         # Arc lumineux qui tourne (un quart de cercle)
         self._arc.circle = (cx, cy, r, self.angle, self.angle + 90)
 
+    # Un tour en 4 s. Animé par l'horloge et non par Animation(...).repeat :
+    # dans Kivy, « repeat » n'a d'effet que sur une SÉQUENCE (a + b) ; sur une
+    # animation simple il est ignoré en silence -> l'anneau ne faisait qu'un
+    # seul tour puis s'arrêtait.
+    DEGRES_PAR_SECONDE = 90.0
+    _horloge = None
+
     def start(self):
-        Animation.cancel_all(self, "angle")
+        self.stop()
         self.angle = 0
-        anim = Animation(angle=360, duration=4.0, t="linear")
-        anim.repeat = True
-        anim.start(self)
+        self._horloge = Clock.schedule_interval(self._tourner, 1 / 30.0)
+
+    def _tourner(self, dt):
+        self.angle = (self.angle + self.DEGRES_PAR_SECONDE * dt) % 360
 
     def stop(self):
         Animation.cancel_all(self, "angle")
+        if self._horloge is not None:
+            self._horloge.cancel()
+            self._horloge = None
 
 
 class SleepOverlay(FloatLayout):
+    _scan_horloge = None
     """Voile de veille : fond noir, logo NOVA animé, heure discrète."""
 
     def __init__(self, on_wake=None, **kwargs):
@@ -176,19 +188,30 @@ class SleepOverlay(FloatLayout):
         self.logo.opacity = 1
         self.ring.stop()
         Animation.cancel_all(self, "scan_pos")
+        if self._scan_horloge is not None:
+            self._scan_horloge.cancel()
+            self._scan_horloge = None
         self._scan_color.rgba = theme.get_rgba("primary", 0)
         if self._clock is not None:
             self._clock.cancel()
             self._clock = None
 
+    DUREE_BALAYAGE = 3.2      # s pour descendre de haut en bas
+
     def _start_scan(self):
-        """Ligne lumineuse qui descend en boucle sur tout l'écran."""
+        """Ligne lumineuse qui descend en boucle sur tout l'écran, tant que
+        la veille dure (même raison que l'anneau : « repeat » était ignoré,
+        la ligne ne descendait qu'une fois)."""
         self._scan_color.rgba = theme.get_rgba("primary", 0.35)
         Animation.cancel_all(self, "scan_pos")
+        if self._scan_horloge is not None:
+            self._scan_horloge.cancel()
         self.scan_pos = 1.0
-        anim = Animation(scan_pos=0.0, duration=3.2, t="linear")
-        anim.repeat = True
-        anim.start(self)
+        self._scan_horloge = Clock.schedule_interval(self._descendre, 1 / 30.0)
+
+    def _descendre(self, dt):
+        pos = self._scan_pos - dt / self.DUREE_BALAYAGE
+        self.scan_pos = pos + 1.0 if pos < 0 else pos
 
     def _maj_heure(self, *_a):
         from datetime import datetime

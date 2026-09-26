@@ -313,6 +313,15 @@ class SettingsApp(BaseApp):
         restart_btn.bind(on_press=self._restart)
         content.add_widget(restart_btn)
 
+        # Quitter vers le bureau du Pi. Demande une confirmation : sur un
+        # écran tactile porté, un effleurement ne doit pas fermer NOVA.
+        quitter_btn = NeonButton(
+            icon="logout", text="Quitter vers le bureau",
+            size_hint=(1, None), height=dp(50), corner_radius=dp(2),
+            accent="error")
+        quitter_btn.bind(on_press=self._demander_quitter)
+        content.add_widget(quitter_btn)
+
         scroll.add_widget(content)
         main.add_widget(scroll)
 
@@ -519,6 +528,27 @@ class SettingsApp(BaseApp):
         self._config.set("notifications", bool(value))
         print(f"[settings] Notifications : {value}")
 
+    def _demander_quitter(self, *_a):
+        """Confirmation avant de fermer NOVA et revenir au bureau du Pi."""
+        from kivy.uix.popup import Popup
+        boite = BoxLayout(orientation="vertical", spacing=dp(12), padding=dp(12))
+        boite.add_widget(Label(
+            text="Fermer NOVA et revenir au bureau du Raspberry Pi ?\n"
+                 "Relance : ./start_nova.sh ou redémarrage du Pi.",
+            color=theme_manager.get_color("text"), halign="center"))
+        boutons = BoxLayout(size_hint=(1, None), height=CIBLE_MIN, spacing=dp(12))
+        annuler = NeonButton(text="Annuler", corner_radius=dp(2))
+        confirmer = NeonButton(icon="logout", text="Quitter", accent="error",
+                               corner_radius=dp(2))
+        boutons.add_widget(annuler)
+        boutons.add_widget(confirmer)
+        boite.add_widget(boutons)
+        popup = Popup(title="QUITTER NOVA", content=boite, size_hint=(0.7, 0.5),
+                      auto_dismiss=True)
+        annuler.bind(on_press=lambda *_a: popup.dismiss())
+        confirmer.bind(on_press=lambda *_a: (popup.dismiss(), quitter_nova()))
+        popup.open()
+
     def _restart(self, instance):
         print("[settings] Redémarrage demandé...")
         # Relancer proprement le processus NOVA
@@ -527,6 +557,15 @@ class SettingsApp(BaseApp):
             os._exit(42)  # code 42 : un script de lancement peut relancer
         except Exception as error:
             print("[settings] redémarrage impossible :", error)
+
+
+def quitter_nova(delai=0.3):
+    """Ferme NOVA proprement (code de sortie 0) : start_nova.sh ne le relance
+    pas (il ne relance que sur le code 42 de « Redémarrer »), on retrouve
+    donc le bureau du Pi. App.stop() passe par on_stop (nettoyage)."""
+    from kivy.app import App
+    print("[settings] fermeture de NOVA demandée : retour au bureau")
+    Clock.schedule_once(lambda dt: App.get_running_app().stop(), delai)
 
 
 NovaApp = SettingsApp

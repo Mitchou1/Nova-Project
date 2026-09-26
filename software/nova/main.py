@@ -25,18 +25,32 @@ from kivy.config import Config as KivyConfig
 KivyConfig.set("input", "mouse", "mouse,multitouch_on_demand")
 KivyConfig.set("kivy", "exit_on_escape", "1")
 
-# Clavier virtuel NOVA (nova/ui/nova_keyboard.py) plutôt que celui du
-# système : ce dernier recouvrait les champs sans que NOVA puisse connaître
-# sa hauteur. « systemanddock » garde le clavier physique utilisable (PC,
-# clavier USB) tout en affichant le clavier NOVA docké en bas.
-# SDL_ENABLE_SCREEN_KEYBOARD=0 : SDL ne demande pas en plus le clavier
-# visuel de l'OS. Désactivable par "virtual_keyboard": false dans la config.
+# Clavier tactile : le clavier virtuel du bureau s'ouvre mal (ou par-dessus
+# les champs) au-dessus d'une app Kivy plein écran, et NOVA ne peut pas
+# connaître sa hauteur. On utilise le clavier virtuel NOVA
+# (nova/ui/nova_keyboard.py) : hauteur connue, donc le champ actif remonte
+# juste au-dessus. « systemanddock » garde en plus un clavier physique
+# utilisable (clavier USB sur la Pi, clavier du PC).
+# Réglable dans system.json : "screen": {"virtual_keyboard": "auto"|true|false}
+# (« auto » = seulement sur la Pi, écran tactile sans clavier physique).
 import os                                                         # noqa: E402
 
-CLAVIER_NOVA = bool(get_config().get("virtual_keyboard", True))
+_virtual_keyboard = get_config().get("screen", {}).get("virtual_keyboard", "auto")
+CLAVIER_NOVA = _virtual_keyboard is True or (_virtual_keyboard == "auto" and is_raspberry_pi())
 if CLAVIER_NOVA:
+    # SDL ne doit pas demander en plus le clavier visuel du système
     os.environ.setdefault("SDL_ENABLE_SCREEN_KEYBOARD", "0")
     KivyConfig.set("kivy", "keyboard_mode", "systemanddock")
+
+# Double appui sur la Pi : la config Kivy par defaut lit l'ecran tactile deux
+# fois — via SDL (le bureau convertit le toucher en souris, provider "mouse")
+# ET directement via probesysfs/MTD (/dev/input/eventX). Chaque appui arrivait
+# en double : deux lettres par touche du clavier virtuel. On garde seulement
+# SDL, dont les coordonnees suivent toujours la fenetre.
+if is_raspberry_pi():
+    for _option in KivyConfig.options("input"):
+        if KivyConfig.get("input", _option, raw=True).startswith("probesysfs"):
+            KivyConfig.remove_option("input", _option)
 
 from kivy.app import App                                          # noqa: E402
 import time

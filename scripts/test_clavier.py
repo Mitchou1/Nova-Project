@@ -22,6 +22,11 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "software"))
 
+# « auto » n'active le clavier NOVA que sur la Pi : on le force pour le test
+from nova.utils.config_loader import get_config                 # noqa: E402
+_cfg = get_config()
+_cfg.set("screen", dict(_cfg.get("screen", {}) or {}, virtual_keyboard=True), save=False)
+
 import nova.main as nova_main                                    # noqa: E402
 from kivy.base import EventLoop                                  # noqa: E402
 from kivy.clock import Clock                                     # noqa: E402

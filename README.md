@@ -63,6 +63,17 @@ sudo ./scripts/install.sh
 NOVA — préférez-le à un appel direct de `python3 nova/main.py`, qui échoue si
 le Python système ne trouve pas les dépendances du venv.
 
+## 🚀 Lancer et mettre à jour
+
+| Où | Commande | Ce qu'elle fait |
+|---|---|---|
+| Pi / PC | `./start_nova.sh` | Crée le venv si besoin, installe les dépendances quand `requirements*.txt` a changé, démarre les services de carte (Docker), puis lance NOVA. Un service pas encore prêt ne bloque jamais le lancement. |
+| Pi | `./update_nova.sh` | Met de côté les modifications locales, récupère `main` depuis GitHub (HTTPS, sans clé SSH), puis met à jour les dépendances. `--start` lance NOVA ensuite. |
+| PC | `./scripts/sync_to_pi.sh` | Trouve la Pi sur le réseau et lui envoie les données lourdes absentes de Git : `maps_data/`, `valhalla_data/`, `models/`. |
+
+Les réglages propres à une machine vont dans `config/system.local.json` (non
+suivi par Git) : une mise à jour ne les écrase jamais.
+
 ## 👤 Auteur
 
 **Mitchou** — Étudiant en électronique, ESPRIT Tunisie

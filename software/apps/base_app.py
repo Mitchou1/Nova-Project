@@ -34,6 +34,39 @@ _APP_ICON_BY_ID = {
 }
 
 
+# ─── Règles de mise en page communes (écran tactile 5", 800x480) ─────────
+# Cible tactile minimale : en dessous de 44 px, un bouton est difficile à
+# viser au doigt (recommandation Apple/Google, reprise par la charte NOVA).
+CIBLE_MIN = dp(44)
+# En-tête : RETOUR + titre. Sa hauteur est aussi celle d'une cible tactile.
+HAUTEUR_EN_TETE = CIBLE_MIN
+_MARGE_ECRAN = dp(14)      # padding de la colonne principale
+_ESPACE = dp(10)           # espacement vertical entre en-tête, trait, contenu
+
+
+def haut_contenu(hauteur_ecran=None):
+    """Fraction de hauteur (pour pos_hint « top ») juste SOUS l'en-tête.
+
+    Plusieurs apps posaient leurs barres d'outils à « top: 0.97 » ou
+    « 0.92 », donc PAR-DESSUS le bouton RETOUR (bouton ↑ de Fichiers à
+    99 % sur RETOUR, flèche de l'Agenda, chemin du Terminal...). Toute
+    barre placée sous l'en-tête doit utiliser cette valeur.
+    """
+    if hauteur_ecran is None:
+        from kivy.core.window import Window
+        hauteur_ecran = Window.height
+    occupe = _MARGE_ECRAN + HAUTEUR_EN_TETE + _ESPACE + dp(1) + _ESPACE
+    return 1.0 - occupe / float(hauteur_ecran)
+
+
+def hauteur_relative(px, hauteur_ecran=None):
+    """Convertit une hauteur en px en fraction d'écran (pour pos_hint)."""
+    if hauteur_ecran is None:
+        from kivy.core.window import Window
+        hauteur_ecran = Window.height
+    return px / float(hauteur_ecran)
+
+
 class BackButton(ButtonBehavior, FloatLayout):
     """Bouton retour : flèche Material + « RETOUR », cadre discret."""
 
@@ -117,11 +150,11 @@ class BaseApp(Screen):
             self._bg = RoundedRectangle()
         root.bind(pos=self._redraw_bg, size=self._redraw_bg)
 
-        column = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(10),
+        column = BoxLayout(orientation="vertical", padding=_MARGE_ECRAN, spacing=_ESPACE,
                            size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
 
         # --- en-tête ---
-        header = BoxLayout(size_hint=(1, None), height=dp(40), spacing=dp(10))
+        header = BoxLayout(size_hint=(1, None), height=HAUTEUR_EN_TETE, spacing=dp(10))
         self.back_btn = BackButton(on_tap=self.go_home)
         header.add_widget(self.back_btn)
 

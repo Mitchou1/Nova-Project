@@ -6,7 +6,8 @@
         "height": 480,
         "rotation": 0
     },
-    "theme": "undercover",
+    "virtual_keyboard": true,
+    "theme": "classic",
     "language": "en",
     "wifi": {
         "auto_connect": true
@@ -30,6 +31,7 @@
         "style": "basic-preview",
         "api_key": "",
         "online": true,
+        "allow_online_fallback": false,
         "local_url": "http://localhost:8080/styles/nova-streets/{z}/{x}/{y}.png"
     },
     "ai": {

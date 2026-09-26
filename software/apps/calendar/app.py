@@ -21,7 +21,7 @@ import contextlib
 import sqlite3
 import os
 
-from apps.base_app import BaseApp
+from apps.base_app import BaseApp, CIBLE_MIN, haut_contenu, hauteur_relative
 from nova.ui.theme import theme_manager
 from nova.ui.widgets import GlassCard, NeonButton
 
@@ -408,9 +408,12 @@ class CalendarApp(BaseApp):
         main = self.children[0]
 
         # ─── HEADER NAVIGATION ─────────────────────────────────────
+        # Sous l'en-tête commun : à « top 0.92 », la flèche « jour
+        # précédent » chevauchait RETOUR.
+        haut = haut_contenu()
         header = BoxLayout(
             size_hint=(0.95, None), height=dp(50),
-            pos_hint={'center_x': 0.5, 'top': 0.92}, spacing=dp(8)
+            pos_hint={'center_x': 0.5, 'top': haut}, spacing=dp(8)
         )
 
         prev_btn = NeonButton(icon="chevron_left", size_hint=(None, 1),
@@ -442,8 +445,9 @@ class CalendarApp(BaseApp):
         main.add_widget(header)
 
         # ─── LISTE ÉVÉNEMENTS ──────────────────────────────────────
+        haut_liste = haut - hauteur_relative(dp(50) + dp(8))
         scroll = ScrollView(
-            size_hint=(0.95, 0.78),
+            size_hint=(0.95, haut_liste - 0.02),
             pos_hint={'center_x': 0.5, 'y': 0.02}
         )
 

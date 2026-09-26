@@ -41,6 +41,7 @@ ICON_BY_APP = {
     "settings": "settings",
     "camera": "photo_camera",     # manquait : la tuile affichait du tofu
     "files": "folder",
+    "terminal": "terminal",
 }
 
 # Ordre de bascule des modes (bouton palette)
@@ -117,6 +118,9 @@ class AppTile(ButtonBehavior, FloatLayout):
                         pos_hint={"x": 0, "y": 0})
         self.icon = MaterialIcon(icon_name, size=dp(44), color_key="primary",
                                  size_hint=(1, 0.66))
+        # Taille d'icône qui SUIT la hauteur de sa case (au plus 44 px) :
+        # fixée à 44 px, elle était coupée dès que la tuile rapetissait.
+        self.icon.bind(height=lambda w, h: setattr(w, "font_size", min(dp(44), h * 0.92)))
         self.caption = Label(text=name, font_name=fonts.FONT_MONO,
                              font_size=dp(12), size_hint=(1, 0.34),
                              halign="center", valign="middle",
@@ -324,8 +328,11 @@ class HomeScreen(Screen):
         # Les hauteurs sont en PROPORTIONS (size_hint_y) et non en pixels
         # fixes, pour respecter le rythme vertical de la maquette Stitch quel
         # que soit l'ecran (800x480 paysage, ou plus tard un autre format).
-        self.column = BoxLayout(orientation="vertical", padding=dp(14),
-                                spacing=dp(8),
+        # Espacements resserrés (8 -> 5 px, marges 14 -> 10 px en haut et
+        # en bas) : 29 px regagnés pour les tuiles et le dock, au lieu de
+        # rapetisser les tuiles.
+        self.column = BoxLayout(orientation="vertical", padding=[dp(14), dp(10)],
+                                spacing=dp(5),
                                 size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
 
         header = self._build_header()
@@ -333,31 +340,35 @@ class HomeScreen(Screen):
         self.column.add_widget(header)
 
         clock = self._build_clock()
-        clock.size_hint_y = 0.15           # bloc horloge
+        # Horloge : 15 % laissait ~59 px pour des chiffres de 58 px, dont le
+        # haut était coupé. 17 % + police 44 px : les chiffres tiennent.
+        clock.size_hint_y = 0.17           # bloc horloge
         clock.height = 0
         self.column.add_widget(clock)
 
         event = self._build_event_card()
-        event.size_hint_y = 0.12           # carte « prochain evenement »
+        event.size_hint_y = 0.11           # carte « prochain evenement »
         self.column.add_widget(event)
 
         # Respiration avant la grille (reduite : les tuiles priment)
-        self.column.add_widget(Widget(size_hint_y=0.015))
+        self.column.add_widget(Widget(size_hint_y=0.01))
 
         # Grille d'applications : le coeur de l'ecran.
         # 3 colonnes, conforme a la maquette Stitch (code.html: grid-cols-3).
-        self.apps_grid = GridLayout(cols=3, spacing=dp(10), size_hint=(1, 0.47))
+        # 44 % : 3 rangées de tuiles d'environ 56 px (icône + nom lisibles)
+        self.apps_grid = GridLayout(cols=3, spacing=dp(10), size_hint=(1, 0.44))
         self.column.add_widget(self.apps_grid)
 
         sensors = self._build_sensor_line()
-        sensors.size_hint_y = 0.06         # bandeau de mesures
+        sensors.size_hint_y = 0.05         # bandeau de mesures
         self.column.add_widget(sensors)
 
         # Respiration avant le dock
-        self.column.add_widget(Widget(size_hint_y=0.02))
+        self.column.add_widget(Widget(size_hint_y=0.01))
 
         navbar = self._build_navbar()
-        navbar.size_hint_y = 0.10          # dock de navigation, en bas
+        # 13 % : boutons d'environ 47 px de haut (à 10 %, ils faisaient 36 px)
+        navbar.size_hint_y = 0.13          # dock de navigation, en bas
         self.column.add_widget(navbar)
 
         self.root.add_widget(self.column)
@@ -392,12 +403,12 @@ class HomeScreen(Screen):
         box = BoxLayout(orientation="vertical", size_hint=(1, 0.20), spacing=dp(2))
         # Horloge avec halo : la couleur suit le mode (rouge en cyberpunk)
         self.time_label = GlowLabel(
-            text="00:00", font_name=fonts.FONT_DISPLAY_XL, font_size=dp(58),
+            text="00:00", font_name=fonts.FONT_DISPLAY_XL, font_size=dp(44),
             color=theme.get_rgba("primary"), glow_color=theme.get_rgba("primary"),
-            halign="left", valign="bottom", size_hint=(1, 0.7))
+            halign="left", valign="bottom", size_hint=(1, 0.74))
         box.add_widget(self.time_label)
         self.date_label = Label(text="", font_name=fonts.FONT_MONO, font_size=dp(12),
-                                halign="left", valign="top", size_hint=(1, 0.3),
+                                halign="left", valign="top", size_hint=(1, 0.26),
                                 color=theme.get_rgba("text_secondary"))
         self.date_label.bind(size=lambda w, s: setattr(w, "text_size", s))
         box.add_widget(self.date_label)
@@ -500,8 +511,9 @@ class HomeScreen(Screen):
         self._redraw_progress()
 
     def _build_navbar(self):
+        # 48 px de haut pour les boutons (cible tactile >= 44 px)
         bar = BoxLayout(size_hint=(1, None), height=dp(52), spacing=dp(6),
-                        padding=[dp(30), dp(6)])
+                        padding=[dp(30), dp(2)])
         bar.add_widget(Widget())
         self.nav_home = NavButton("home", active=True)
         self.nav_explore = NavButton("explore", on_tap=lambda: self._open("maps"))
@@ -569,26 +581,33 @@ class HomeScreen(Screen):
 
     def update_status(self, _dt=None):
         """Statut WIFI + Bluetooth + batterie en haut à droite (texte, charte Undercover)."""
-        from nova.utils.platform_utils import wifi_state, bluetooth_state
-
-        # "none" (aucune interface, ex. sur PC de dev) est traité comme actif
-        # pour ne pas afficher une croix rouge trompeuse en simulation.
-        wifi_up = wifi_state() != "down"
-        bt_up = bluetooth_state() != "down"
-        wifi = "4/4" if wifi_up else "0/4"
-        bt = "ON" if bt_up else "OFF"
-        # Batterie
-        try:
-            from nova.power_manager import get_power_manager
-            bat = int(get_power_manager().get_battery_level())
-        except Exception:
-            bat = 82
+        # Dernier état RÉEL connu (nova/system_status.py, relu en arrière-
+        # plan) : avant, le WiFi affichait toujours « 4/4 » et la batterie
+        # une valeur simulée présentée comme vraie. Jamais de commande
+        # système ici : ce code tourne sur le thread de l'interface.
+        from nova.system_status import surveillance
+        etat = surveillance().instantane()
+        if etat is None:
+            wifi = bt = bat = "..."
+        else:
+            w, b, batt = etat["wifi"], etat["bluetooth"], etat["batterie"]
+            if not w.get("disponible"):
+                wifi = "--"
+            elif not w.get("actif"):
+                wifi = "OFF"
+            elif w.get("ssid"):
+                barres = min(4, max(1, (w.get("signal") or 0) // 25 + 1))
+                wifi = "{}/4".format(barres)
+            else:
+                wifi = "0/4"                     # activé mais non connecté
+            bt = "--" if not b.get("disponible") else ("ON" if b.get("actif") else "OFF")
+            bat = "SIM" if batt["simule"] else "{:.0f}%".format(batt["pourcent"])
         sec = theme.get_color("text_secondary").lstrip("#") + "ff"
         pri = theme.get_color("primary").lstrip("#") + "ff"
         self.status_label.text = (
             "[color={sec}]WIFI[/color] [color={pri}]{wifi}[/color]  "
             "[color={sec}]BT[/color] [color={pri}]{bt}[/color]  "
-            "[color={sec}]BAT[/color] [color={pri}]{bat}%[/color]"
+            "[color={sec}]BAT[/color] [color={pri}]{bat}[/color]"
         ).format(sec=sec, pri=pri, wifi=wifi, bt=bt, bat=bat)
 
     # ------------------------------------------------------------------

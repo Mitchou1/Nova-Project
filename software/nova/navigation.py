@@ -69,6 +69,35 @@ def _nominatim_search(query, country="tn", limit=5):
     return results
 
 
+# Dernière cause d'échec et dernière source utilisée ("local" / "en ligne"),
+# lues par l'app Maps pour afficher un message honnête au lieu d'un vague
+# « aucun résultat » quand c'est en réalité un service local qui est en panne.
+_last_failure = [""]
+_last_source = [""]
+
+
+def last_failure():
+    """Explication du dernier échec de geocode()/route() ("" si aucun)."""
+    return _last_failure[0]
+
+
+def last_source():
+    """'local' ou 'en ligne' : d'où vient le dernier résultat réussi."""
+    return _last_source[0]
+
+
+def _online_allowed():
+    """Le repli sur les services internet est-il autorisé ?
+
+    Désactivé par défaut : NOVA doit fonctionner hors ligne (cahier des
+    charges). Avant, le repli était silencieux et masquait les pannes des
+    serveurs locaux — tout semblait marcher tant qu'il y avait internet.
+    À activer explicitement avec "allow_online_fallback": true dans la
+    section "map" de la config.
+    """
+    return bool(_map_config().get("allow_online_fallback", False))
+
+
 def _map_config():
     try:
         from nova.utils.config_loader import get_config
@@ -84,7 +113,8 @@ def _nominatim_local_search(query, country="tn", limit=5):
     """Recherche via TON serveur Nominatim local (Docker, hors ligne).
 
     Aucune limite de débit ici : c'est ta propre machine.
-    Renvoie [] si le serveur local n'est pas joignable (pas encore lancé).
+    Renvoie None si le serveur local n'est pas joignable (à distinguer de
+    [] = serveur joignable mais aucun résultat).
     """
     if not query.strip():
         return []
@@ -104,8 +134,8 @@ def _nominatim_local_search(query, country="tn", limit=5):
         with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as error:
-        print("[nav] Nominatim local indisponible ({}), repli en ligne".format(error))
-        return []
+        print("[nav] Nominatim local indisponible :", error)
+        return None
 
     results = []
     for item in data:
@@ -125,16 +155,29 @@ def geocode(query, country="tn", limit=5):
 
     Stratégie, du plus au moins prioritaire :
       1. Nominatim LOCAL (ton serveur Docker, 100% hors ligne)
-      2. Nominatim public (en ligne, si le serveur local est indisponible)
-      3. MapTiler (secours final)
+      2. Nominatim public puis MapTiler (en ligne) — UNIQUEMENT si
+         allow_online_fallback est activé dans la config
+    En cas d'échec, last_failure() dit pourquoi.
     """
+    _last_failure[0] = ""
     if not query.strip():
         return []
 
     # 1) Nominatim LOCAL : hors ligne, aucune limite de débit
     results = _nominatim_local_search(query, country=country, limit=limit)
     if results:
+        _last_source[0] = "local"
         return results
+    if results is None:
+        _last_failure[0] = ("Recherche hors ligne indisponible : le serveur "
+                            "Nominatim local ne répond pas (port 8088).")
+    else:
+        _last_failure[0] = "Aucun résultat pour cette recherche."
+
+    if not _online_allowed():
+        return []
+    print("[nav] repli EN LIGNE pour la recherche (allow_online_fallback)")
+    _last_source[0] = "en ligne"
 
     # 2) Nominatim public (OSM en ligne) : bon pour les points d'intérêt
     results = _nominatim_search(query, country=country, limit=limit)
@@ -222,8 +265,9 @@ def route(start_lat, start_lon, end_lat, end_lon, profile="driving-car"):
       {"points": [(lat, lon), ...], "distance_km": ..., "duration_min": ...}
     ou None si échec (aucun moteur disponible, aucun trajet).
 
-    Stratégie : Valhalla LOCAL d'abord (hors ligne, pas de clé, pas de quota),
-    puis OpenRouteService (en ligne) si Valhalla ne répond pas.
+    Stratégie : Valhalla LOCAL (hors ligne, pas de clé, pas de quota), puis
+    OpenRouteService (en ligne) seulement si allow_online_fallback est
+    activé. En cas d'échec, last_failure() dit pourquoi.
 
     Bug observé (ligne droite affichée sur la carte) : juste après le
     démarrage du conteneur Valhalla, son serveur HTTP répond déjà sur
@@ -236,13 +280,21 @@ def route(start_lat, start_lon, end_lat, end_lon, profile="driving-car"):
     pause avant de basculer sur ORS, pour absorber ce délai de démarrage
     sans obliger l'utilisateur à redémarrer le conteneur à la main.
     """
+    _last_failure[0] = ""
     for tentative in range(2):
         result = _route_valhalla(start_lat, start_lon, end_lat, end_lon, profile)
         if result is not None:
+            _last_source[0] = "local"
             return result
         if tentative == 0:
             time.sleep(2)
-    return _route_ors(start_lat, start_lon, end_lat, end_lon, profile)
+    if not _online_allowed():
+        return None
+    print("[nav] repli EN LIGNE pour l'itinéraire (allow_online_fallback)")
+    result = _route_ors(start_lat, start_lon, end_lat, end_lon, profile)
+    if result is not None:
+        _last_source[0] = "en ligne"
+    return result
 
 
 def _route_valhalla(start_lat, start_lon, end_lat, end_lon, profile="driving-car"):
@@ -268,8 +320,16 @@ def _route_valhalla(start_lat, start_lon, end_lat, end_lon, profile="driving-car
             headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # Le serveur répond, mais refuse le trajet (ex. point hors du
+        # réseau routier) : ce n'est PAS une panne, ne pas le présenter ainsi.
+        print("[nav] Valhalla : aucun trajet (HTTP {})".format(error.code))
+        _last_failure[0] = "Aucun itinéraire routier trouvé vers cette destination."
+        return None
     except Exception as error:
-        print("[nav] Valhalla local indisponible ({}), repli en ligne".format(error))
+        print("[nav] Valhalla local indisponible :", error)
+        _last_failure[0] = ("Itinéraire hors ligne indisponible : le serveur "
+                            "Valhalla local ne répond pas (port 8002).")
         return None
 
     try:
@@ -287,6 +347,8 @@ def _route_valhalla(start_lat, start_lon, end_lat, end_lon, profile="driving-car
         if len(points) < 3:
             print("[nav] Valhalla : trajet dégradé ({} point(s)), tuiles "
                   "probablement pas encore chargées.".format(len(points)))
+            _last_failure[0] = ("Valhalla démarre encore (tuiles routières en "
+                                "chargement). Réessaie dans un instant.")
             return None
         summary = trip.get("summary", {})
         dist_km = summary.get("length", 0)          # déjà en km chez Valhalla

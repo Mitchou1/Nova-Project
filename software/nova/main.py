@@ -25,10 +25,27 @@ from kivy.config import Config as KivyConfig
 KivyConfig.set("input", "mouse", "mouse,multitouch_on_demand")
 KivyConfig.set("kivy", "exit_on_escape", "1")
 
+# Clavier virtuel NOVA (nova/ui/nova_keyboard.py) plutôt que celui du
+# système : ce dernier recouvrait les champs sans que NOVA puisse connaître
+# sa hauteur. « systemanddock » garde le clavier physique utilisable (PC,
+# clavier USB) tout en affichant le clavier NOVA docké en bas.
+# SDL_ENABLE_SCREEN_KEYBOARD=0 : SDL ne demande pas en plus le clavier
+# visuel de l'OS. Désactivable par "virtual_keyboard": false dans la config.
+import os                                                         # noqa: E402
+
+CLAVIER_NOVA = bool(get_config().get("virtual_keyboard", True))
+if CLAVIER_NOVA:
+    os.environ.setdefault("SDL_ENABLE_SCREEN_KEYBOARD", "0")
+    KivyConfig.set("kivy", "keyboard_mode", "systemanddock")
+
 from kivy.app import App                                          # noqa: E402
 import time
 from kivy.clock import Clock
 from kivy.core.window import Window                               # noqa: E402
+
+if CLAVIER_NOVA:
+    from nova.ui.nova_keyboard import NovaKeyboard                # noqa: E402
+    Window.set_vkeyboard_class(NovaKeyboard)
 from kivy.uix.screenmanager import ScreenManager                  # noqa: E402
 
 from nova.launcher import AppLauncher                             # noqa: E402
@@ -78,6 +95,11 @@ class NovaApp(App):
         self.sm.size_hint = (1, 1)
         self.sm.pos_hint = {"x": 0, "y": 0}
         self.root_layout.add_widget(self.sm)
+        if CLAVIER_NOVA:
+            # Seuls les écrans remontent au-dessus du clavier ; les couches
+            # de veille et d'alerte ci-dessous restent plein écran.
+            from nova.ui.nova_keyboard import set_lift_target
+            set_lift_target(self.sm)
 
         # Les deux couches doivent couvrir TOUT l'ecran : sans size_hint
         # explicite elles restaient a 100x100 px et cassaient l'affichage.
@@ -177,18 +199,47 @@ class NovaApp(App):
 
     def on_start(self):
         print("[nova] demarrage termine — theme : {}".format(theme.name))
+        # Moteur IA préchargé en arrière-plan : la première commande ne doit
+        # plus attendre le chargement des modèles (~2,4 Go) ni la lecture du
+        # prompt système par Qwen.
+        try:
+            from nova.ai_engine import preload_in_background
+            preload_in_background()
+        except Exception as error:
+            print("[ia] préchargement non lancé :", error)
+        # État réel du système (WiFi, Bluetooth, batterie...) relu en
+        # arrière-plan : l'accueil et les Paramètres l'affichent sans jamais
+        # lancer de commande sur le thread de l'interface.
+        try:
+            from nova.system_status import surveillance
+            # Le bandeau d'état de l'accueil se met à jour dès chaque
+            # lecture (sinon « ... » jusqu'à son prochain tour d'horloge)
+            surveillance().abonner(lambda _etat: Clock.schedule_once(
+                lambda dt: self.home.update_status(), 0))
+            surveillance().demarrer()
+        except Exception as error:
+            print("[systeme] surveillance non démarrée :", error)
+        # Services de carte hors ligne (tuiles, itinéraire, recherche) :
+        # vérifiés et relancés dès le démarrage, dans leur propre thread,
+        # pour qu'ils soient prêts avant même d'ouvrir Maps sans jamais
+        # bloquer l'affichage de l'accueil.
+        try:
+            from nova.map_services import get_map_services
+            get_map_services().start()
+        except Exception as error:
+            print("[cartes] gestionnaire non démarré :", error)
 
     def on_stop(self):
         home = getattr(self, "home", None)
         if home is not None:
             home.on_cleanup()
 
-        # Arrêter le serveur de carte local s'il tourne encore
+        # Arrêter la SURVEILLANCE des services de carte. Les conteneurs,
+        # eux, restent actifs (--restart unless-stopped) : les supprimer à la
+        # fermeture obligeait à tout relancer et cassait le hors ligne.
         try:
-            from nova.tileserver_manager import get_tileserver
-            manager = get_tileserver()
-            if manager is not None:
-                manager.shutdown()
+            from nova.map_services import get_map_services
+            get_map_services().shutdown()
         except Exception:
             pass
 

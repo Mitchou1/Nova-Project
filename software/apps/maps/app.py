@@ -59,8 +59,9 @@ class MapsApp(BaseApp):
         self._movement_clock = None
         super().__init__(**kwargs)
         # Gestionnaire du serveur de carte local (démarre/arrête avec l'app)
-        self._tileserver = None
         self._map_ready = False
+        self._services_listener = None
+        self._online_tiles = False   # True si on a basculé sur les tuiles internet
         # Navigation
         self._current_route = None
         self._current_dest = None
@@ -90,9 +91,12 @@ class MapsApp(BaseApp):
 
         # ─── BARRE DE RECHERCHE (destination) ─────────────────────
         # Placée SOUS l'en-tête (l'en-tête est tout en haut, ~top 0.9-1.0)
+        # 44 px (cible tactile) et 6 px sous l'en-tête (RETOUR) : à « top
+        # 0.88 » elle touchait l'en-tête.
         search_bar = BoxLayout(
-            size_hint=(0.92, None), height=dp(40), spacing=dp(6),
-            pos_hint={'center_x': 0.5, 'top': 0.88}
+            size_hint=(0.92, None), height=dp(44), spacing=dp(6),
+            # sous le trait de l'en-tête (qui traversait la barre)
+            pos_hint={'center_x': 0.5, 'top': 1 - (dp(14) + dp(44) + dp(10) + dp(1) + dp(4)) / 480.0}
         )
         self.search_input = TextInput(
             hint_text="Rechercher une destination...",
@@ -119,10 +123,18 @@ class MapsApp(BaseApp):
             text="", font_size=dp(12), markup=True,
             color=theme_manager.get_color("primary"),
             size_hint=(0.92, None), height=dp(22),
-            pos_hint={'center_x': 0.5, 'top': 0.83},
+            # juste SOUS la barre de recherche (top 0.88, 40 dp) : à 0.83 le
+            # bandeau chevauchait le champ de saisie.
+            pos_hint={'center_x': 0.5, 'top': 1 - (dp(14) + dp(44) + dp(15) + dp(44) + dp(4)) / 480.0},
             halign='center', valign='middle', opacity=0,
         )
-        self.nav_info.bind(size=lambda w, s: setattr(w, "text_size", s))
+        # Largeur fixe, hauteur qui suit le texte : les messages d'état
+        # (détail des 3 services, cause d'une panne) font plusieurs lignes et
+        # étaient tronqués à une seule. Fond opaque : lisible sur la carte.
+        self.nav_info.bind(
+            width=lambda w, v: setattr(w, "text_size", (v, None)),
+            texture_size=lambda w, ts: setattr(w, "height", max(dp(22), ts[1] + dp(8))))
+        _opaque_backdrop(self.nav_info)
         main.add_widget(self.nav_info)
 
         # ─── INFO PANEL ────────────────────────────────────────────
@@ -169,7 +181,9 @@ class MapsApp(BaseApp):
 
         # Mode
         self.mode_label = Label(
-            text="Mode: Normal | Satellites: 8",
+            # « Satellites: 8 » était inventé : le GPS NEO-6M n'est pas
+            # encore branché, la position est simulée — on le dit.
+            text="Mode: Normal | GPS simulé (module non branché)",
             font_size=dp(11),
             color=theme_manager.get_color("text_secondary"),
             pos_hint={'x': 0.05, 'y': 0.1},
@@ -213,6 +227,22 @@ class MapsApp(BaseApp):
 
         _opaque_backdrop(btn_layout)
         main.add_widget(btn_layout)
+
+        # ─── PASTILLE D'ÉTAT : LOCAL / EN LIGNE / INDISPONIBLE ─────
+        # Avant, rien n'indiquait d'où venait la carte : une panne des
+        # serveurs locaux passait inaperçue tant qu'il y avait internet.
+        # Coin bas-droit de la zone carte visible (au-dessus du panneau info).
+        # Un appui affiche le détail des trois services.
+        self.status_badge = Button(
+            text="", font_size=dp(12), bold=True,
+            size_hint=(None, None), size=(dp(132), dp(44)),
+            pos_hint={'right': 0.98, 'y': 0.385},
+            background_normal="", background_down="",
+            background_color=theme_manager.get_with_alpha("background", 0.9),
+        )
+        self.status_badge.bind(on_press=lambda *_: self._show_services_detail())
+        main.add_widget(self.status_badge)
+        self._refresh_status_badge()
 
         # L'en-tête (RETOUR + titre) du base_app est ajouté AVANT la carte,
         # donc la carte le recouvre visuellement. On remonte l'en-tête au
@@ -273,8 +303,10 @@ class MapsApp(BaseApp):
                     "Quota carte dépassé. Attendez une minute et réessayez."), 0)
             return
         if not results:
-            Clock.schedule_once(
-                lambda dt: self._set_nav_info("Aucun résultat pour cette recherche."), 0)
+            # navigation dit POURQUOI : serveur local en panne ou vraiment
+            # aucun résultat — les deux ne se corrigent pas pareil.
+            msg = navigation.last_failure() or "Aucun résultat pour cette recherche."
+            Clock.schedule_once(lambda dt: self._set_nav_info(msg), 0)
             return
 
         dest = results[0]
@@ -310,10 +342,10 @@ class MapsApp(BaseApp):
             Clock.schedule_once(show_route, 0)
         else:
             # Pas de route : on affiche un message d'erreur, on ne trace PAS de ligne droite
+            reason = navigation.last_failure() or "Impossible de calculer l'itinéraire."
+
             def show_error(dt):
-                self._set_nav_info(
-                    "Impossible de calculer l'itinéraire. Vérifiez que le service Valhalla est actif (port 8002).\n"
-                    "Vous pouvez aussi réessayer avec une autre destination.")
+                self._set_nav_info(reason)
                 # On s'assure qu'aucune route n'est affichée
                 self.clear_route()
                 self._current_route = None
@@ -325,51 +357,120 @@ class MapsApp(BaseApp):
         self.nav_info.text = text
 
     def on_enter(self, *args):
-        """À l'ouverture de Maps : simulation de position + serveur de carte local si besoin."""
+        """À l'ouverture de Maps : simulation de position + état des services."""
         if self._movement_clock is None:
             self._movement_clock = Clock.schedule_interval(self._simulate_movement, 2.0)
 
-        from nova.utils.config_loader import get_config
-        provider = (get_config().get("map", {}) or {}).get("provider", "")
-        if provider != "local":
-            return   # en ligne (MapTiler) : pas de serveur à lancer
-
-        from nova.tileserver_manager import get_tileserver
-        from nova.paths import MAPS_DATA_DIR
-        self._tileserver = get_tileserver(str(MAPS_DATA_DIR))
-
-        # Afficher un message pendant le démarrage
-        self.nav_info.opacity = 1
-        self.nav_info.text = "Démarrage de la carte..."
-
-        def ready():
-            from kivy.clock import Clock
-            def apply(dt):
-                self._map_ready = True
-                self.nav_info.text = ""
-                self.nav_info.opacity = 0
-                # forcer le rechargement des tuiles maintenant que le serveur répond
-                self.map_widget._tile_cache.clear()
-                self.map_widget._missing.clear()
-                self.map_widget._redraw()
-            Clock.schedule_once(apply, 0)
-
-        def failed(msg):
-            from kivy.clock import Clock
-            Clock.schedule_once(
-                lambda dt: self._set_nav_info("Carte indisponible : " + msg), 0)
-
-        self._tileserver.start(on_ready=ready, on_error=failed)
+        from nova.map_services import get_map_services
+        services = get_map_services()
+        # Normalement déjà lancé par main.on_start ; idempotent sinon.
+        services.start()
+        if self._services_listener is None:
+            # Le gestionnaire notifie depuis son thread : on repasse sur le
+            # thread graphique Kivy avant de toucher aux widgets.
+            self._services_listener = lambda snap: Clock.schedule_once(
+                lambda dt: self._on_services_changed(), 0)
+            services.add_listener(self._services_listener)
+        self._on_services_changed()
 
     def on_leave(self, *args):
-        """À la sortie de Maps : arrêter la simulation de position et le
-        serveur de carte (audit : la simulation tournait avant en continu
-        24h/24 des le demarrage, meme sur un autre ecran)."""
+        """À la sortie de Maps : arrêter la simulation de position.
+        Les serveurs de carte, eux, restent actifs : les supprimer à chaque
+        sortie était la cause du bug « carte hors ligne cassée »."""
         if self._movement_clock is not None:
             self._movement_clock.cancel()
             self._movement_clock = None
-        if self._tileserver is not None:
-            self._tileserver.stop()
+        if self._services_listener is not None:
+            from nova.map_services import get_map_services
+            get_map_services().remove_listener(self._services_listener)
+            self._services_listener = None
+
+    # ─── État des services hors ligne ──────────────────────────
+    def _map_mode(self):
+        """(mode, couleur) de la carte : local / démarrage / en ligne /
+        indisponible, d'après la config et l'état RÉEL du serveur de tuiles."""
+        from nova.utils.config_loader import get_config
+        from nova.map_services import get_map_services, READY, STARTING
+        cfg = get_config().get("map", {}) or {}
+        if cfg.get("provider", "") != "local":
+            return "en ligne", "warning"   # choix explicite de la config
+        snap = get_map_services().snapshot()
+        tiles = snap["tiles"][0]
+        if tiles == READY:
+            partiel = any(v[0] != READY for v in snap.values())
+            return ("local (partiel)" if partiel else "local"), (
+                "warning" if partiel else "success")
+        if tiles == STARTING:
+            return "démarrage", "warning"
+        if cfg.get("allow_online_fallback", False):
+            return "en ligne", "warning"
+        return "indisponible", "error"
+
+    def _refresh_status_badge(self):
+        mode, color = self._map_mode()
+        # Pas de pastille « ● » : ce caractère n'existe pas dans la police
+        # embarquée et s'affichait en carré vide. C'est le texte lui-même
+        # qui prend la couleur de l'état.
+        self.status_badge.text = mode.upper()
+        self.status_badge.color = theme_manager.get_color(color)
+
+    def _on_services_changed(self):
+        """Réagit à un changement d'état : pastille, tuiles, message."""
+        mode, _c = self._map_mode()
+        self._refresh_status_badge()
+
+        want_online = mode == "en ligne"
+        if want_online != self._online_tiles or (mode.startswith("local")
+                                                 and not self._map_ready):
+            self._switch_tiles(online=want_online)
+        self._map_ready = mode.startswith("local") or want_online
+
+        if mode == "démarrage":
+            self._set_nav_info("Démarrage de la carte hors ligne...")
+        elif mode == "indisponible":
+            from nova.map_services import get_map_services
+            reason = get_map_services().status("tiles")[1]
+            self._set_nav_info("Carte hors ligne indisponible : " + reason)
+        elif self.nav_info.text.startswith(("Démarrage de la carte",
+                                            "Carte hors ligne indisponible")):
+            self.nav_info.text = ""
+            self.nav_info.opacity = 0
+
+    def _switch_tiles(self, online):
+        """Change la source des tuiles et recharge l'affichage.
+        Les tuiles internet ont leur propre cache disque, pour ne pas se
+        mélanger avec celles du serveur local (styles différents)."""
+        from nova.paths import MAP_TILES_DIR
+        from nova.ui.map_engine import build_tile_url
+        if online:
+            cfg = {"map": {"provider": "maptiler"}}
+            try:
+                from nova.utils.config_loader import get_config
+                cfg = {"map": dict(get_config().get("map", {}) or {},
+                                   provider="maptiler")}
+            except Exception:
+                pass
+            self.map_widget.tile_url = build_tile_url(cfg)
+            self.map_widget.tiles_dir = str(MAP_TILES_DIR / "online")
+            print("[maps] tuiles EN LIGNE (repli autorisé par la config)")
+        else:
+            self.map_widget.tile_url = build_tile_url()
+            self.map_widget.tiles_dir = str(MAP_TILES_DIR)
+        self._online_tiles = online
+        self.map_widget._tile_cache.clear()
+        self.map_widget._missing.clear()
+        self.map_widget._redraw()
+
+    def _show_services_detail(self):
+        """Affiche l'état de chaque service (appui sur la pastille)."""
+        from nova.map_services import get_map_services, READY, STARTING
+        noms = {READY: "prêt", STARTING: "démarrage"}
+        lignes = []
+        for state, reason, label in get_map_services().snapshot().values():
+            txt = noms.get(state, "INDISPONIBLE")
+            lignes.append("{} : {}{}".format(label, txt,
+                                             " — " + reason if reason else ""))
+        self._set_nav_info("\n".join(lignes))
 
     def _show_start_button(self):
         """Affiche le bouton Démarrer une fois un trajet trouvé."""

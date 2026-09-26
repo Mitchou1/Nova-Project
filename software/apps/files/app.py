@@ -22,7 +22,7 @@ from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 
-from apps.base_app import BaseApp
+from apps.base_app import BaseApp, CIBLE_MIN, haut_contenu, hauteur_relative
 from nova import fonts
 from nova.ui.theme import theme_manager
 from nova.ui.widgets import GlassCard, NeonButton
@@ -132,7 +132,7 @@ class EntryRow(GlassCard):
 
         # Bouton menu (renommer / supprimer)
         menu = NeonButton(icon="more_vert", size_hint=(None, None),
-                          size=(dp(34), dp(34)),
+                          size=(CIBLE_MIN, CIBLE_MIN),     # était 34 px : trop petit au doigt
                           pos_hint={"right": 0.975, "center_y": 0.5},
                           corner_radius=dp(2))
         menu.bind(on_press=lambda *_a: self.on_menu and self.on_menu(self))
@@ -168,8 +168,10 @@ class FilesApp(BaseApp):
         main = self.children[0]
 
         # ─── Chemin actuel + bouton remonter ─────────────────────────
-        barre = BoxLayout(size_hint=(0.95, None), height=dp(40),
-                          pos_hint={"center_x": 0.5, "top": 0.97},
+        # Sous l'en-tête : à « top 0.97 », le bouton ↑ recouvrait RETOUR
+        haut = haut_contenu()
+        barre = BoxLayout(size_hint=(0.95, None), height=CIBLE_MIN,
+                          pos_hint={"center_x": 0.5, "top": haut},
                           spacing=dp(8))
 
         self.btn_haut = NeonButton(icon="arrow_upward", size_hint=(None, 1),
@@ -212,8 +214,10 @@ class FilesApp(BaseApp):
         main.add_widget(barre)
 
         # ─── Liste ───────────────────────────────────────────────────
-        self.scroll = ScrollView(size_hint=(0.95, 0.76),
-                                 pos_hint={"center_x": 0.5, "top": 0.87})
+        haut_liste = haut - hauteur_relative(CIBLE_MIN + dp(6))
+        bas_liste = 0.02 + hauteur_relative(dp(18) + dp(4))   # au-dessus du bandeau
+        self.scroll = ScrollView(size_hint=(0.95, haut_liste - bas_liste),
+                                 pos_hint={"center_x": 0.5, "top": haut_liste})
         self.liste = BoxLayout(orientation="vertical", spacing=dp(6),
                                size_hint_y=None, padding=[0, dp(4)])
         self.liste.bind(minimum_height=self.liste.setter("height"))

@@ -247,7 +247,7 @@ class AssistantApp(BaseApp):
 
         # ─── CHAMP DE SAISIE TEXTE (pour taper les commandes) ─────
         input_row = BoxLayout(
-            size_hint=(0.9, None), height=dp(38), spacing=dp(6),
+            size_hint=(0.9, None), height=dp(44), spacing=dp(6),   # cible tactile >= 44 px
             pos_hint={'center_x': 0.5, 'y': 0.04}
         )
         from nova import fonts as _f
@@ -268,7 +268,7 @@ class AssistantApp(BaseApp):
         input_row.add_widget(self.text_input)
 
         send_btn = NeonButton(icon="chevron_right", size_hint=(None, 1),
-                              width=dp(44), corner_radius=dp(2))
+                              width=dp(48), corner_radius=dp(2))
         send_btn.bind(on_press=self._on_text_send)
         input_row.add_widget(send_btn)
         control_card.add_widget(input_row)

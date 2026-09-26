@@ -16,6 +16,7 @@ Le flux :
 import difflib
 import json
 import re
+import calendar
 import unicodedata
 from datetime import datetime, timedelta
 
@@ -123,6 +124,13 @@ Si la demande ne correspond a AUCUNE action ci-dessus (par exemple discuter, rep
 une question generale), ne renvoie jamais de JSON : reponds normalement en texte.
 Si elle correspond a une action mais qu'il manque une information (ex. quelle destination,
 quelle heure), pose la question en texte plutot que de deviner une valeur.
+
+MATERIEL ABSENT : l'appareil n'a ni telephone, ni messagerie, ni lecteur multimedia.
+Pour une demande d'envoyer un SMS, de passer un appel, de lire ou envoyer un e-mail, de
+jouer de la musique ou une video, ou de regler un minuteur ou une alarme, et UNIQUEMENT
+dans ces cas, reponds : « Je n'ai pas encore cette fonctionnalite. » N'invente jamais une
+action absente de la liste. Tout le reste (discussion, blague, question generale,
+explication, traduction, calcul) : reponds normalement en texte.
 
 REGLE ABSOLUE : n'ecris JAMAIS une phrase qui ressemble a une confirmation ("C'est note",
 "J'ajoute", "C'est fait", "Rendez-vous cree"...) sans avoir d'abord renvoye le JSON de
@@ -346,26 +354,131 @@ _MOTS_DECLENCHEURS_EVENEMENT = re.compile(
 _RAPPELLE_MOI_RE = re.compile(r"\brappelle.moi\s+(?:de\s+|d['’]\s*)?")
 
 
+class _DateInvalide(Exception):
+    """Date ou heure impossible (« le 32 janvier », « à 25h ») : message
+    poli destine a l'utilisateur. Levee plutot que de retomber sur le LLM,
+    qui inventait une date ou redemandait sans expliquer le probleme."""
+
+
+# Nombres ecrits en lettres (la reconnaissance vocale ecrit souvent
+# « dans une heure », « dans vingt minutes » plutot qu'en chiffres).
+_NOMBRES_LETTRES = {
+    "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
+    "six": 6, "sept": 7, "huit": 8, "neuf": 9, "dix": 10, "onze": 11,
+    "douze": 12, "treize": 13, "quatorze": 14, "quinze": 15, "seize": 16,
+    "vingt": 20, "trente": 30, "quarante": 40, "cinquante": 50,
+    "soixante": 60,
+}
+# Les plus longs d'abord : sinon "quatre" serait reconnu dans "quatorze".
+_MOT_NOMBRE = "|".join(sorted(_NOMBRES_LETTRES, key=len, reverse=True))
+# Garde (?![a-z]) seulement après un mot : après un chiffre, « 1h30 »
+# doit rester reconnu (le « h » suit directement le « 1 »).
+_NOMBRE_RE = (r"(?:\d+|(?:%s)(?:[- ](?:et[- ])?(?:%s))*(?![a-z]))"
+              % (_MOT_NOMBRE, _MOT_NOMBRE))
+_UNITE_MIN = r"(?:minutes?|mins?|mn)(?![a-z])"
+
+
+def _nombre(texte):
+    """'30' -> 30, 'vingt-cinq' -> 25, 'dix sept' -> 17 ; None si inconnu."""
+    texte = texte.strip()
+    if texte.isdigit():
+        return int(texte)
+    total = 0
+    for mot in re.split(r"[- ]+", texte):
+        if mot == "et":
+            continue
+        if mot not in _NOMBRES_LETTRES:
+            return None
+        total += _NOMBRES_LETTRES[mot]
+    return total or None
+
+
+_DUREE_RE = re.compile(
+    r"\bdans\s+(?:"
+    r"(?P<demi>une?\s+demi[- ]?heure)"
+    r"|(?P<quart>un\s+quart\s+d.?heure)"
+    r"|(?P<troisquarts>trois\s+quarts?\s+d.?heure)"
+    r"|(?P<n>" + _NOMBRE_RE + r")\s*(?P<unite>minutes?|mins?|mn|heures?|h|jours?|semaines?)(?![a-z])"
+    r"(?:\s*(?:et\s+)?(?:(?P<etdemi>demie?)|(?P<etquart>quart)"
+    r"|(?P<m>" + _NOMBRE_RE + r")\s*(?:" + _UNITE_MIN + r")?))?"
+    r")")
+
+
 def _extraire_duree_relative(reste):
-    """Extrait une durée relative du type "dans X minutes/heures/jours"
-    et renvoie (date_absolue, heure_absolue, span) ou (None, None, None).
+    """Calcule en Python un delai relatif (« dans 30 minutes », « dans une
+    heure », « dans une demi-heure », « dans 1h30 », « dans 2 jours ») et
+    renvoie (date "AAAA-MM-JJ", heure "HH:MM", span) ou (None, None, None).
+
+    Pourquoi en Python : Qwen n'a pas d'horloge ; il calculait mal l'heure
+    d'arrivee ou reclamait une date precise au lieu de la deduire.
     """
-    match = re.search(r"\bdans\s+(\d+)\s+(minute|minutes|heure|heures|jour|jours)\b", reste)
-    if not match:
+    m = _DUREE_RE.search(reste)
+    if not m:
         return None, None, None
-    valeur = int(match.group(1))
-    unite = match.group(2)
-    if "minute" in unite:
-        delta = timedelta(minutes=valeur)
-    elif "heure" in unite:
-        delta = timedelta(hours=valeur)
-    elif "jour" in unite:
-        delta = timedelta(days=valeur)
+    if m.group("demi"):
+        delta = timedelta(minutes=30)
+    elif m.group("quart"):
+        delta = timedelta(minutes=15)
+    elif m.group("troisquarts"):
+        delta = timedelta(minutes=45)
     else:
-        return None, None, None
-    maintenant = datetime.now()
-    cible = maintenant + delta
-    return cible.strftime("%Y-%m-%d"), cible.strftime("%H:%M"), match.span()
+        n = _nombre(m.group("n"))
+        if n is None:
+            return None, None, None
+        unite = m.group("unite")
+        if unite.startswith("h"):
+            delta = timedelta(hours=n)
+            if m.group("etdemi"):
+                delta += timedelta(minutes=30)
+            elif m.group("etquart"):
+                delta += timedelta(minutes=15)
+            elif m.group("m"):
+                delta += timedelta(minutes=_nombre(m.group("m")) or 0)
+        elif unite.startswith("j"):
+            delta = timedelta(days=n)
+        elif unite.startswith("s"):
+            delta = timedelta(weeks=n)
+        else:
+            delta = timedelta(minutes=n)
+    if delta > timedelta(days=366):
+        raise _DateInvalide("Ce delai est trop lointain : je gere au plus un an.")
+    cible = datetime.now() + delta
+    return cible.strftime("%Y-%m-%d"), cible.strftime("%H:%M"), m.span()
+
+
+_MOIS = ["janvier", "fevrier", "mars", "avril", "mai", "juin", "juillet",
+         "aout", "septembre", "octobre", "novembre", "decembre"]
+_MOIS_AFFICHE = ["janvier", "février", "mars", "avril", "mai", "juin",
+                 "juillet", "août", "septembre", "octobre", "novembre",
+                 "décembre"]
+# Le jour de la semaine éventuel (« mardi 1er décembre ») fait partie de la
+# date : sinon il restait dans le titre du rendez-vous.
+_DATE_MOIS_RE = re.compile(
+    r"\b(?:(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+)?"
+    r"(\d{1,2}|1er|premier)\s+(" + "|".join(_MOIS) + r")(?:\s+(\d{4}))?\b")
+
+
+def _date_valide(jour, mois, annee, annee_explicite):
+    """datetime de la date, avec l'annee suivante si la date (sans annee
+    precisee) est deja passee — « le 15 mars » en septembre = mars prochain.
+    Leve _DateInvalide avec une explication si la date n'existe pas."""
+    if not 1 <= mois <= 12:
+        raise _DateInvalide("Le mois {} n'existe pas.".format(mois))
+    if not annee_explicite:
+        # Comparaison (mois, jour) et non datetime : datetime lèverait une
+        # erreur pour une date impossible (29 février), et l'année annoncée
+        # dans le message serait alors la mauvaise.
+        aujourd_hui = datetime.now()
+        if (mois, jour) < (aujourd_hui.month, aujourd_hui.day):
+            annee += 1
+    nb_jours = calendar.monthrange(annee, mois)[1]
+    if not 1 <= jour <= nb_jours:
+        nom = _MOIS_AFFICHE[mois - 1]
+        if mois == 2 and jour == 29:
+            raise _DateInvalide("Le 29 février n'existe pas en {}.".format(annee))
+        raise _DateInvalide("Le {} {} n'existe pas : {} ne compte que {} jours."
+                            .format(jour, nom, nom, nb_jours))
+    return datetime(annee, mois, jour)
 
 
 def _extraire_date_evenement(reste):
@@ -375,6 +488,16 @@ def _extraire_date_evenement(reste):
         if m:
             d = (datetime.now() + timedelta(days=delta)).strftime("%Y-%m-%d")
             return d, m.span()
+    # Date avec le mois en lettres (« le 15 mars », « 1er avril 2027 ») :
+    # avant les jours de la semaine, sinon « mardi 15 mars » donnait le
+    # mardi suivant au lieu du 15 mars.
+    m = _DATE_MOIS_RE.search(reste)
+    if m:
+        jour = 1 if m.group(1) in ("1er", "premier") else int(m.group(1))
+        mois = _MOIS.index(m.group(2)) + 1
+        annee = int(m.group(3)) if m.group(3) else datetime.now().year
+        date = _date_valide(jour, mois, annee, bool(m.group(3)))
+        return date.strftime("%Y-%m-%d"), m.span()
     for i, jour in enumerate(_JOURS_SEMAINE):
         m = re.search(r"\b" + jour + r"\b", reste)
         if m:
@@ -385,10 +508,7 @@ def _extraire_date_evenement(reste):
     m = _DATE_ISO_RE.search(reste)
     if m:
         annee, mois, jour = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        try:
-            return datetime(annee, mois, jour).strftime("%Y-%m-%d"), m.span()
-        except ValueError:
-            return None, None
+        return _date_valide(jour, mois, annee, True).strftime("%Y-%m-%d"), m.span()
     m = _DATE_EXPLICITE_RE.search(reste)
     if m:
         jour, mois = int(m.group(1)), int(m.group(2))
@@ -396,10 +516,8 @@ def _extraire_date_evenement(reste):
         annee = datetime.now().year
         if annee_txt:
             annee = int(annee_txt) if len(annee_txt) == 4 else 2000 + int(annee_txt)
-        try:
-            return datetime(annee, mois, jour).strftime("%Y-%m-%d"), m.span()
-        except ValueError:
-            return None, None
+        date = _date_valide(jour, mois, annee, bool(annee_txt))
+        return date.strftime("%Y-%m-%d"), m.span()
 
     # Repli tolerant aux fautes de frappe (ex. "dedmain" pour "demain",
     # faute reelle observee) : compare chaque mot de la phrase aux mots-cles
@@ -434,7 +552,7 @@ def _extraire_heure_evenement(reste):
     heure = int(m.group(1))
     minute = int(m.group(2)) if m.group(2) else 0
     if not (0 <= heure <= 23 and 0 <= minute <= 59):
-        return None, None
+        raise _DateInvalide("{}h{:02d} n'est pas une heure valide.".format(heure, minute))
     return "{:02d}:{:02d}".format(heure, minute), m.span()
 
 
@@ -458,6 +576,27 @@ def _etendre_article_precedent(texte, span):
     return span
 
 
+def _restaurer_texte(titre, norm, text):
+    """Retrouve accents et majuscules d'origine d'un titre extrait du texte
+    normalisé : « appeler karim » -> « appeler Karim », « verifier le
+    four » -> « vérifier le four ». Chaque mot du titre est recherché dans
+    l'ordre dans le texte normalisé, puis recopié depuis l'original à la
+    même position. Si les deux textes n'ont pas la même longueur (cas rare
+    de caractères décomposés), le titre normalisé est gardé tel quel.
+    """
+    original = unicodedata.normalize("NFC", text.strip())
+    if len(original) != len(norm):
+        return titre
+    morceaux, curseur = [], 0
+    for mot in titre.split():
+        m = re.compile(r"(?<!\w)" + re.escape(mot) + r"(?!\w)").search(norm, curseur)
+        if m is None:
+            return titre
+        morceaux.append(original[m.start():m.end()])
+        curseur = m.end()
+    return " ".join(morceaux)
+
+
 def _essai_ajout_rdv(text):
     """Reconnait 'ajoute un rendez-vous <titre> <date> a <heure>' ou
     'rappelle-moi de <titre> <date> a <heure>'.
@@ -475,6 +614,13 @@ def _essai_ajout_rdv(text):
       - None si aucun declencheur d'ajout de rendez-vous n'est present du
         tout (l'appelant peut alors se rabattre sur le LLM pour autre chose).
     """
+    try:
+        return _essai_ajout_rdv_brut(text)
+    except _DateInvalide as err:
+        return {"action": "date_invalide", "message": str(err)}
+
+
+def _essai_ajout_rdv_brut(text):
     norm = _sans_accents(text.strip().lower())
     if not norm:
         return None
@@ -490,6 +636,13 @@ def _essai_ajout_rdv(text):
     if date is not None and heure is not None:
         # on a une date/heure absolue, on retire la durée du titre
         reste = reste[:span_duree[0]] + " " + reste[span_duree[1]:]
+        # « dans 3 jours à 10h » : l'heure explicite l'emporte sur l'heure
+        # actuelle reportée de 3 jours.
+        heure_explicite, span_heure = _extraire_heure_evenement(reste)
+        if heure_explicite and datetime.strptime(date, "%Y-%m-%d").date() != datetime.now().date():
+            heure = heure_explicite
+        else:
+            span_heure = None
     else:
         # 2. Sinon, extraire date et heure classiques
         date, span_date = _extraire_date_evenement(reste)
@@ -547,8 +700,12 @@ def _essai_ajout_rdv(text):
     titre = re.sub(r"^\s*(?:de\s+|d['’]\s*|pour\s+)", "", titre)
     titre = re.sub(r"\s+", " ", titre).strip(" .,:;-'’")
     if not titre:
-        return {"action": "demander_precision_evenement"}
+        # Date et heure comprises mais pas de titre (« rappelle-moi dans
+        # 30 minutes ») : titre par défaut plutôt que de redemander la date,
+        # ce qui n'avait aucun sens pour l'utilisateur.
+        titre = "rappel" if (m_rappelle or "rappel" in norm) else "rendez-vous"
 
+    titre = _restaurer_texte(titre, norm, text)
     return {
         "action": "ajouter_evenement",
         "titre": titre[:1].upper() + titre[1:],
@@ -557,6 +714,158 @@ def _essai_ajout_rdv(text):
         "description": "",
         "rappel": 10,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chemin rapide étendu (mesuré : ces commandes passaient par Qwen, 1 à 56 s,
+# avec des erreurs — « quelle est la température » -> « Lire le capteur
+# temperature. », « règle la radio sur 98.5 » -> ouvrait juste la radio).
+# Chaque motif est volontairement strict (phrase entière ou verbe + objet
+# précis) : en cas de doute on laisse le LLM décider plutôt que d'exécuter
+# une mauvaise action. Ordre : du plus précis au plus général.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Capacités absentes : réponse honnête immédiate au lieu de laisser le LLM
+# inventer (mesuré : « envoie un SMS » -> 18 s pour une réponse confuse).
+_NON_DISPONIBLE = [
+    (re.compile(r"\b(?:envoie[rz]?|ecris|ecrire|redige[rz]?)\b.*\b(?:sms|texto|message)s?\b"
+                r"|\b(?:sms|texto)s?\b"), "l'envoi de SMS", ""),
+    (re.compile(r"(?:^|\s)(?:appelle[rz]?|telephone[rz]?)\s+(?!moi\b)"
+                r"|\bpasse[rz]? un (?:appel|coup de fil)\b"),
+     "les appels téléphoniques", ""),
+    (re.compile(r"\b(?:e.?mails?|courriels?|mails?)\b"), "les e-mails", ""),
+    (re.compile(r"\b(?:joue[rz]?|mets|mettre|lance[rz]?|ecoute[rz]?|passe)\b.*"
+                r"\b(?:musique|chansons?|playlist|spotify|deezer|podcasts?|album)\b"),
+     "la lecture de musique", ""),
+    (re.compile(r"\b(?:joue[rz]?|mets|lance[rz]?|regarde[rz]?|ouvre)\b.*"
+                r"\b(?:videos?|films?|youtube|netflix|series?)\b"),
+     "la lecture de vidéos", ""),
+    (re.compile(r"\b(?:minuteur|chronometre|compte a rebours|timer|alarme|reveil|"
+                r"reveille.moi)\b"),
+     "le minuteur et l'alarme",
+     " En attendant, dites « rappelle-moi dans 10 minutes » ou « rappelle-moi "
+     "demain à 7h » : je crée un rappel dans l'agenda."),
+]
+
+_VERBES_ON = ("active", "activer", "activez", "allume", "allumer", "demarre",
+              "demarrer", "mets", "remets", "ouvre", "lance")
+
+_REGLES_RAPIDES_ETENDUES = [
+    # --- météo : réponse Open-Meteo via la recherche web (« quelle est la
+    # température à Paris » est une question météo, pas le capteur) ---
+    (re.compile(r"\b(?:meteo|quel temps|temps qu.il (?:fait|fera)|va.t.il pleuvoir|"
+                r"temperature (?:a|au|en|pour) [a-z])"),
+     lambda m, t: {"action": "rechercher_web", "requete": t.strip()}),
+    # --- volume ---
+    (re.compile(r"\b(?:coupe[rz]?\s+(?:le\s+)?son|mode silencieux|mets? en sourdine|muet)\b"),
+     lambda m, t: {"action": "regler_volume", "valeur": 0}),
+    (re.compile(r"\bvolume\b\D{0,20}?(\d{1,3})\s*(?:%|pour ?cent)?"),
+     lambda m, t: {"action": "regler_volume", "valeur": int(m.group(1))}),
+    (re.compile(r"\b(?:monte[rz]?|augmente[rz]?)\s+(?:le\s+)?(?:volume|son)\b|\bplus fort\b"),
+     lambda m, t: {"action": "regler_volume", "delta": 10}),
+    (re.compile(r"\b(?:baisse[rz]?|diminue[rz]?)\s+(?:le\s+)?(?:volume|son)\b|\bmoins fort\b"),
+     lambda m, t: {"action": "regler_volume", "delta": -10}),
+    # --- luminosité ---
+    (re.compile(r"\bluminosite\b\D{0,20}?(\d{1,3})\s*(?:%|pour ?cent)?"),
+     lambda m, t: {"action": "regler_luminosite", "valeur": int(m.group(1))}),
+    (re.compile(r"\b(?:monte[rz]?|augmente[rz]?)\s+(?:la\s+)?luminosite\b|\bplus lumineux\b"),
+     lambda m, t: {"action": "regler_luminosite", "delta": 20}),
+    (re.compile(r"\b(?:baisse[rz]?|diminue[rz]?)\s+(?:la\s+)?luminosite\b|\bmoins lumineux\b"),
+     lambda m, t: {"action": "regler_luminosite", "delta": -20}),
+    # --- WiFi / Bluetooth / notifications ---
+    (re.compile(r"\b(active[rz]?|allume[rz]?|demarre[rz]?|mets|remets|ouvre|lance|"
+                r"coupe[rz]?|desactive[rz]?|eteins|eteindre|arrete[rz]?|stoppe[rz]?)\s+"
+                r"(?:le\s+|la\s+|les\s+)?(wi.?fi|bluetooth|notifications?)\b"),
+     lambda m, t: {"action": ("wifi" if m.group(2).startswith("w") else
+                              "bluetooth" if m.group(2).startswith("b") else
+                              "notifications"),
+                   "actif": m.group(1) in _VERBES_ON}),
+    # --- carte / itinéraire ---
+    (re.compile(r"\b(?:ou suis.je|ou je suis|ma position|mes coordonnees|ou sommes.nous)\b"),
+     lambda m, t: {"action": "ma_position"}),
+    (re.compile(r"\b(?:emmene|amene|conduis|guide|ramene)[- ]moi\s+"
+                r"(?:a|au|aux|en|vers|chez|jusqu.a)\s+(.+)$"
+                r"|\b(?:itineraire|trajet|chemin)\s+(?:vers|pour|jusqu.a|a|au)\s+(.+)$"
+                r"|\bcomment (?:aller|me rendre|je vais|va.t.on)\s+"
+                r"(?:a|au|aux|en|chez|jusqu.a)\s+(.+)$"
+                r"|\b(?:navigue|va|aller|allons|guidage)\s+(?:vers|jusqu.a)\s+(.+)$"),
+     lambda m, t: {"action": "naviguer",
+                   "destination": _texte_original(t, m, next(
+                       i for i in range(1, 5) if m.group(i)))}),
+    # --- capteurs (phrase entière : « quelle est la température à Paris »
+    # est une question météo, pas une lecture de capteur) ---
+    (re.compile(r"\b(?:etat|valeurs?|lecture|donnees)\s+(?:de\s+)?(?:tous\s+)?"
+                r"(?:les\s+|des\s+)?capteurs\b|\btous les capteurs\b"),
+     lambda m, t: {"action": "etat_capteurs"}),
+    (re.compile(r"^(?:(?:quelle?|donne(?:.moi)?|lis|dis(?:.moi)?|c.est quoi|combien)\s+"
+                r"(?:est\s+|fait\s+|de\s+|d.)?(?:la\s+|le\s+|l.)?)?"
+                r"(temperature|humidite|pression)"
+                r"(?:\s+(?:ambiante|actuelle|ici|interieure))?(?:\s+(?:il fait|fait.il))?\s*\??$"),
+     lambda m, t: {"action": "lire_capteur", "capteur": m.group(1)}),
+    (re.compile(r"^il fait (?:combien|quelle temperature)(?: ici)?\s*\??$"),
+     lambda m, t: {"action": "lire_capteur", "capteur": "temperature"}),
+    (re.compile(r"\b(?:ma vitesse|a quelle vitesse (?:je|on) (?:vais|roule|avance))\b"),
+     lambda m, t: {"action": "lire_capteur", "capteur": "vitesse"}),
+    # --- radio ---
+    (re.compile(r"\b(?:radio|frequence|station)\b\D{0,25}?(\d{2,4}(?:[.,]\d{1,3})?)"
+                r"|\b(\d{2,4}(?:[.,]\d{1,3})?)\s*(?:mhz|megahertz)\b"),
+     lambda m, t: {"action": "regler_frequence",
+                   "valeur": float((m.group(1) or m.group(2)).replace(",", "."))}),
+    (re.compile(r"\b(?:scanne[rz]?|lance[rz]?\s+le\s+scan|cherche[rz]?\s+des\s+stations)\b"),
+     lambda m, t: {"action": "controler_radio", "commande": "scanner"}),
+    (re.compile(r"\b(?:arrete[rz]?|stoppe[rz]?|coupe[rz]?)\s+(?:la\s+radio|le\s+scan)\b"),
+     lambda m, t: {"action": "controler_radio", "commande": "arreter"}),
+]
+
+# Politesses : phrase ENTIÈRE seulement (« bonjour, ajoute un rdv... » doit
+# aller vers l'action, pas vers une simple salutation).
+_PETITES_PHRASES = [
+    (re.compile(r"^(?:bonjour|salut|bonsoir|coucou|hello|hey|hi)(?: nova)?[\s!.]*$"), "salut"),
+    (re.compile(r"^(?:merci|merci beaucoup|merci bien|super merci|parfait merci|"
+                r"thanks|thank you)(?: nova)?[\s!.]*$"), "merci"),
+    (re.compile(r"^(?:au revoir|bonne nuit|a plus|a bientot|bye)(?: nova)?[\s!.]*$"), "aurevoir"),
+    (re.compile(r"^(?:comment (?:ca|tu) vas?|ca va)(?: nova)?[\s?!.]*$"), "cava"),
+    (re.compile(r"^(?:qui es.tu|tu es qui|comment tu t.appelles?|presente.toi)[\s?!.]*$"), "qui"),
+]
+
+
+def _texte_original(texte, match, groupe):
+    """Extrait un groupe capturé dans le texte ORIGINAL (avec majuscules et
+    accents, ex. « Sousse », « Hammam-Lif ») quand c'est possible : la
+    recherche se fait sur une version sans accents ni majuscules, qui a la
+    même longueur tant que le texte est en caractères précomposés."""
+    original = unicodedata.normalize("NFC", texte.strip())
+    debut, fin = match.span(groupe)
+    valeur = match.group(groupe)
+    if len(original) == len(match.string):
+        valeur = original[debut:fin]
+    return valeur.strip(" .!?")
+
+
+def _chemin_rapide_etendu(text, brut):
+    for motif, message, conseil in _NON_DISPONIBLE:
+        if motif.search(brut):
+            return {"action": "non_disponible", "fonction": message, "conseil": conseil}
+    for motif, genre in _PETITES_PHRASES:
+        if motif.search(brut):
+            return {"action": "petite_phrase", "genre": genre}
+    for motif, fabrique in _REGLES_RAPIDES_ETENDUES:
+        m = motif.search(brut)
+        if m:
+            return fabrique(m, text)
+    # Agenda d'un jour (« qu'est-ce que j'ai demain », « mes rendez-vous du
+    # 15 mars ») : mesuré, Qwen échouait (« je ne peux pas voir les
+    # événements sans plus de détails »). La date est calculée en Python.
+    if (re.search(r"\b(?:qu.est.ce que j.ai|qu.ai.je|j.ai quoi|mon agenda|mon programme|"
+                  r"mes (?:rendez.vous|rdv|evenements))\b", brut)
+            and not re.search(r"\b(?:prochain|supprime|efface|annule|ajoute)", brut)):
+        try:
+            date, _span = _extraire_date_evenement(brut)
+        except _DateInvalide as err:
+            return {"action": "date_invalide", "message": str(err)}
+        return {"action": "voir_evenements",
+                "date": date or datetime.now().strftime("%Y-%m-%d")}
+    return None
 
 
 def try_fast_path(text):
@@ -589,7 +898,7 @@ def try_fast_path(text):
     # "les " doit etre teste avant "l['] " : un "." joker y matcherait aussi
     # "le" (les deux premieres lettres de "les"), ce qui cassait la capture.
     m = re.search(r"\b(?:ouvre|ouvrir|lance|va dans|va sur)\s+"
-                  r"(?:les |la |le |mes |tes |vos |l['’ ])?([a-z]+)", brut)
+                  r"(?:les |la |le |mes |mon |ma |tes |ton |vos |l['’ ])?([a-z]+)", brut)
     if m:
         app_id = _APP_ALIASES.get(m.group(1))
         if app_id:
@@ -653,6 +962,10 @@ def try_fast_path(text):
         if trouve:
             return fabrique(trouve)
 
+    etendu = _chemin_rapide_etendu(text, brut)
+    if etendu is not None:
+        return etendu
+
     # Repli : "(peux-tu) cherche/chercher/recherche/rechercher/trouve(r) X"
     # SANS qualificatif ("sur internet"), qui n'a matché aucune regle nommee
     # ci-dessus (fichiers, suggestions, navigation...). Pas d'ancrage en debut
@@ -707,6 +1020,13 @@ def _dispatch_action(data, app=None):
         return _add_event(data, app)
     if action == "demander_precision_evenement":
         return _demander_precision_evenement()
+    if action == "date_invalide":
+        return data.get("message") or "Cette date n'existe pas."
+    if action == "non_disponible":
+        return "Je n'ai pas encore la fonctionnalité : {}.{}".format(
+            data.get("fonction") or "celle-ci", data.get("conseil") or "")
+    if action == "petite_phrase":
+        return _petite_phrase(data)
     if action == "voir_evenements":
         return _list_events(data, app)
     if action == "supprimer_evenements":
@@ -775,6 +1095,34 @@ def _dispatch_action(data, app=None):
     if action == "mode_economie":
         return _set_power_saving(data)
     return None
+
+
+_PETITES_REPONSES = {
+    "fr": {"salut": "Bonjour ! Que puis-je faire pour vous ?",
+           "merci": "Avec plaisir.",
+           "aurevoir": "À bientôt !",
+           "cava": "Tout fonctionne, merci. Que puis-je faire pour vous ?",
+           "qui": "Je suis NOVA, votre assistant embarqué. Dites « aide » pour "
+                  "savoir ce que je sais faire."},
+    "en": {"salut": "Hello! What can I do for you?",
+           "merci": "You're welcome.",
+           "aurevoir": "See you soon!",
+           "cava": "All systems running. What can I do for you?",
+           "qui": "I'm NOVA, your wearable assistant. Say \"help\" to see what I can do."},
+    "ar": {"salut": "مرحبا! كيف يمكنني مساعدتك؟",
+           "merci": "على الرحب والسعة.",
+           "aurevoir": "إلى اللقاء!",
+           "cava": "كل شيء يعمل. كيف يمكنني مساعدتك؟",
+           "qui": "أنا نوفا، مساعدك الشخصي."},
+}
+
+
+def _petite_phrase(data):
+    """Salutations / remerciements : réponse instantanée dans la langue
+    configurée (mesuré : « merci » passait par Qwen, 14 s, et répondait
+    parfois dans une autre langue)."""
+    reponses = _PETITES_REPONSES.get(_current_language(), _PETITES_REPONSES["fr"])
+    return reponses.get(data.get("genre"), reponses["salut"])
 
 
 def _demander_precision_evenement():
@@ -908,22 +1256,21 @@ def _web_search(data):
     if not requete:
         return "Que voulez-vous que je cherche ?"
     from nova import web_search
-    if not web_search.is_online():
-        return "Pas de connexion internet pour faire une recherche."
-    resultats = web_search.search(requete)
-    reponse = web_search.format_for_speech(resultats, requete)
-    if reponse:
-        return reponse
-    # Repli (accord utilisateur explicite) : DuckDuckGo (reponse instantanee)
-    # et Wikipedia ne couvrent que le factuel/encyclopedique — rien pour un
-    # commerce local, un produit, un prix... Plutot que d'echouer poliment
-    # sans jamais donner d'information reelle ("Je n'ai rien trouve pour..."),
-    # on ouvre un vrai navigateur avec un vrai moteur de recherche sur la
-    # meme requete. Different du bug original (recherche_web ouvrait TOUJOURS
-    # un navigateur sans jamais essayer localement d'abord) : ici la
-    # recherche locale est toujours tentee en premier, le navigateur n'est
-    # qu'un dernier recours si elle echoue vraiment.
-    return _open_browser({"requete": requete})
+    resultat = web_search.answer(requete)
+    if resultat.get("ok"):
+        # Réponse DANS le chat, avec la source citée (jamais d'URL brute :
+        # la synthèse vocale la lirait lettre par lettre).
+        return "{} Source : {}.".format(resultat["texte"], resultat["source"])
+    if resultat.get("raison") == "hors_ligne":
+        return ("Je n'ai pas de connexion internet : je ne peux pas chercher "
+                "« {} », et je préfère ne pas inventer de réponse.".format(requete))
+    # Dernier recours seulement, une fois les trois sources épuisées :
+    # afficher la recherche dans un vrai navigateur.
+    ouvert = _open_browser({"requete": requete})
+    if ouvert.startswith("J'ouvre"):
+        return ("Je n'ai trouvé aucune réponse fiable pour « {} ». J'ouvre la "
+                "recherche dans le navigateur.".format(requete))
+    return "Je n'ai trouvé aucune réponse fiable pour « {} ».".format(requete)
 
 
 def _open_browser(data):
@@ -1213,8 +1560,19 @@ def _int_borne(valeur, defaut, minimum, maximum):
     return max(minimum, min(maximum, n))
 
 
+def _valeur_relative(data, cle):
+    """Applique data["delta"] (« monte le volume ») à la valeur actuelle."""
+    if "delta" not in data:
+        return _valeur_0_100(data)
+    actuel = (_config().get("audio", {}) or {}).get(cle, 50)
+    try:
+        return max(0, min(100, int(actuel) + int(data["delta"])))
+    except (TypeError, ValueError):
+        return None
+
+
 def _set_volume(data):
-    valeur = _valeur_0_100(data)
+    valeur = _valeur_relative(data, "volume")
     if valeur is None:
         return "Je n'ai pas compris le niveau de volume."
     try:
@@ -1233,7 +1591,7 @@ def _set_volume(data):
 
 
 def _set_brightness(data):
-    valeur = _valeur_0_100(data)
+    valeur = _valeur_relative(data, "brightness")
     if valeur is None:
         return "Je n'ai pas compris le niveau de luminosite."
     try:
@@ -1443,6 +1801,24 @@ def _lire_valeurs(app):
         return {}
 
 
+def _capteurs_simules(app):
+    """Les valeurs viennent-elles de la simulation ?
+
+    Avant, on supposait « sur le Pi = valeurs réelles », mais les capteurs
+    I2C ne sont pas encore branchés : l'app Capteurs est toujours en
+    simulation, et l'assistant annonçait donc de fausses mesures comme
+    vraies. On demande désormais l'état à l'app elle-même (simulée par
+    défaut tant qu'aucun pilote réel ne dit le contraire).
+    """
+    manager = _screens(app)
+    if manager is None:
+        return True
+    try:
+        return bool(getattr(manager.get_screen("sensors"), "_simulation_active", True))
+    except Exception:
+        return True
+
+
 def _read_sensor(data, app):
     capteur = (data.get("capteur") or "").strip().lower()
     capteur = _ALIAS_CAPTEURS.get(capteur, capteur)
@@ -1468,7 +1844,7 @@ def _read_sensor(data, app):
     fonction = reponses.get(capteur)
     if fonction is None:
         return "Je ne connais pas ce capteur."
-    suffixe = "" if _sur_pi() else " (valeur simulee)"
+    suffixe = " (valeur simulee, capteur non branche)" if _capteurs_simules(app) else ""
     return fonction() + suffixe
 
 
@@ -1477,7 +1853,7 @@ def _all_sensors(app):
     bme = valeurs.get("bme280", {})
     gps = valeurs.get("gps", {})
     vl53 = valeurs.get("vl53l0x", {})
-    suffixe = "" if _sur_pi() else " (valeurs simulees)"
+    suffixe = " (valeurs simulees, capteurs non branches)" if _capteurs_simules(app) else ""
     return ("Temperature {} °C, humidite {} %, pression {} hPa, "
             "distance {} mm, vitesse {} km/h.{}").format(
         bme.get("temperature", "?"), bme.get("humidity", "?"),
@@ -1549,15 +1925,23 @@ def _set_frequency(data, app):
 # SYSTEME
 # ═════════════════════════════════════════════════════════════════════════
 def _battery():
+    """Niveau de batterie RÉEL (UPS HAT), ou mention claire de simulation.
+    Avant : l'import visé n'existait pas, l'échec était avalé et « 82 % »
+    codé en dur était annoncé — sans mention de simulation sur le Pi."""
     try:
-        from nova.power_manager import get_battery_level
-        niveau = get_battery_level()
-        if niveau is not None:
-            return "Batterie a {} %.".format(niveau)
-    except Exception:
-        pass
-    suffixe = "" if _sur_pi() else " (valeur simulee)"
-    return "Batterie a 82 %.{}".format(suffixe)
+        from nova.power_manager import get_power_manager
+        st = get_power_manager().statut()
+    except Exception as error:
+        print("[actions] batterie :", error)
+        return "Je n'arrive pas à lire la batterie."
+    if st["simule"]:
+        return ("Je n'ai pas de mesure réelle de la batterie : {}. Valeur "
+                "simulée : {:.0f} %.".format(st["raison"] or "aucun UPS détecté",
+                                             st["pourcent"]))
+    etat = ""
+    if st.get("en_charge") is not None:
+        etat = ", en charge" if st["en_charge"] else ", sur batterie"
+    return "Batterie à {:.0f} %{}.".format(st["pourcent"], etat)
 
 
 def _restart():

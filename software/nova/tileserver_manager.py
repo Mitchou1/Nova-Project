@@ -1,175 +1,81 @@
 #!/usr/bin/env python3
-"""Gestion automatique du serveur de tuiles local (TileServer-GL).
+"""Compatibilité : ancien point d'entrée du serveur de tuiles.
 
-Démarre le conteneur Docker TileServer-GL quand on entre dans Maps, et l'arrête
-quand on en sort — pour économiser la RAM du Raspberry Pi. Un délai de grâce
-évite de redémarrer le serveur si l'utilisateur ressort puis revient vite.
+L'ancienne version démarrait TileServer-GL à l'entrée de Maps et SUPPRIMAIT
+le conteneur à la sortie (docker rm -f), puis le recréait avec l'option
+--file au retour. Or --file ignore maps_data/config.json : le style
+« nova-streets » n'existait plus et toute la carte répondait en 404. C'était
+la cause de « la carte ne marche plus hors ligne après avoir lancé NOVA ».
 
-Le serveur sert la carte de la Tunisie (tunisia.mbtiles) en local, donc la
-carte fonctionne 100% hors ligne une fois le MBTiles généré.
+Désormais les trois services (tuiles, itinéraire, recherche) sont gérés par
+nova.map_services : créés avec --config /data/config.json et
+--restart unless-stopped, jamais supprimés. Ce module ne garde que la même
+interface pour ne pas casser le code existant qui l'importe.
 """
 
-import os
-import subprocess
 import threading
-import time
-import urllib.request
 
-# Nom fixe du conteneur (pour pouvoir l'arrêter proprement)
+from nova.map_services import READY, DOWN, get_map_services
+
 CONTAINER_NAME = "nova-tileserver"
-# Port local exposé par TileServer-GL
 TILE_PORT = 8080
-# Délai de grâce avant arrêt réel (secondes) : si on revient dans Maps
-# pendant ce temps, le serveur n'est pas redémarré.
-GRACE_PERIOD = 10
 
 
 class TileServerManager:
-    """Démarre/arrête TileServer-GL selon l'entrée/sortie de l'app Maps."""
+    """Façade sur le service 'tiles' de nova.map_services."""
 
-    def __init__(self, maps_data_dir, mbtiles="tunisia.mbtiles"):
+    def __init__(self, maps_data_dir=None, mbtiles="tunisia.mbtiles"):
         self.maps_data_dir = maps_data_dir
         self.mbtiles = mbtiles
-        self._running = False
-        self._stop_timer = None
-        self._lock = threading.Lock()
 
-    # --- état ------------------------------------------------------------
     def is_ready(self):
-        """Le serveur répond-il sur le port ?"""
-        try:
-            urllib.request.urlopen(
-                "http://localhost:{}/health".format(TILE_PORT), timeout=1)
-            return True
-        except Exception:
-            # /health n'existe pas forcément : tester la racine
-            try:
-                urllib.request.urlopen(
-                    "http://localhost:{}/".format(TILE_PORT), timeout=1)
-                return True
-            except Exception:
-                return False
+        return get_map_services().status("tiles")[0] == READY
 
-    def _container_exists(self):
-        try:
-            out = subprocess.run(
-                ["docker", "ps", "-a", "-q", "-f", "name=" + CONTAINER_NAME],
-                capture_output=True, text=True, timeout=5)
-            return bool(out.stdout.strip())
-        except Exception:
-            return False
-
-    # --- démarrage -------------------------------------------------------
     def start(self, on_ready=None, on_error=None):
-        """Démarre le serveur (si pas déjà lancé). Appelle on_ready quand prêt."""
-        with self._lock:
-            # annuler un arrêt en attente (période de grâce)
-            if self._stop_timer is not None:
-                self._stop_timer.cancel()
-                self._stop_timer = None
-
-            if self._running and self.is_ready():
-                if on_ready:
-                    on_ready()
-                return
-
-        threading.Thread(target=self._do_start, args=(on_ready, on_error),
-                         daemon=True).start()
-
-    def _do_start(self, on_ready, on_error):
-        # Déjà prêt (lancé hors de NOVA) ?
-        if self.is_ready():
-            self._running = True
+        """Assure le démarrage des services ; rappelle on_ready / on_error
+        dès que l'état du serveur de tuiles est connu."""
+        services = get_map_services()
+        services.start()
+        state, reason = services.status("tiles")
+        if state == READY:
             if on_ready:
                 on_ready()
             return
-
-        # Nettoyer un ancien conteneur du même nom
-        self._force_remove()
-
-        mbtiles_path = os.path.join(self.maps_data_dir, self.mbtiles)
-        if not os.path.exists(mbtiles_path):
-            print("[tileserver] fichier introuvable :", mbtiles_path)
+        if state == DOWN:
             if on_error:
-                on_error("carte introuvable")
+                on_error(reason)
             return
 
-        cmd = [
-            "docker", "run", "--rm", "-d",
-            "--name", CONTAINER_NAME,
-            "-v", "{}:/data".format(self.maps_data_dir),
-            "-p", "{}:8080".format(TILE_PORT),
-            "maptiler/tileserver-gl",
-            "--file", self.mbtiles,
-        ]
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True)
-        except Exception as error:
-            print("[tileserver] démarrage impossible :", error)
-            if on_error:
-                on_error(str(error))
-            return
+        done = threading.Event()
 
-        # Attendre que le serveur réponde (jusqu'à ~20 s)
-        for _ in range(40):
-            if self.is_ready():
-                self._running = True
-                print("[tileserver] prêt sur le port", TILE_PORT)
-                if on_ready:
-                    on_ready()
+        def listener(snapshot):
+            st, why, _label = snapshot["tiles"]
+            if st not in (READY, DOWN) or done.is_set():
                 return
-            time.sleep(0.5)
+            done.set()
+            services.remove_listener(listener)
+            if st == READY and on_ready:
+                on_ready()
+            elif st == DOWN and on_error:
+                on_error(why)
+        services.add_listener(listener)
 
-        print("[tileserver] démarré mais ne répond pas à temps")
-        if on_error:
-            on_error("délai dépassé")
-
-    # --- arrêt (avec période de grâce) -----------------------------------
     def stop(self):
-        """Programme l'arrêt du serveur après le délai de grâce."""
-        with self._lock:
-            if self._stop_timer is not None:
-                self._stop_timer.cancel()
-            self._stop_timer = threading.Timer(GRACE_PERIOD, self._do_stop)
-            self._stop_timer.daemon = True
-            self._stop_timer.start()
-
-    def _do_stop(self):
-        with self._lock:
-            self._stop_timer = None
-        self._force_remove()
-        self._running = False
-        print("[tileserver] arrêté")
-
-    def _force_remove(self):
-        """Arrête et supprime le conteneur s'il existe."""
-        try:
-            subprocess.run(["docker", "stop", CONTAINER_NAME],
-                           capture_output=True, timeout=15)
-        except Exception:
-            pass
-        try:
-            subprocess.run(["docker", "rm", "-f", CONTAINER_NAME],
-                           capture_output=True, timeout=10)
-        except Exception:
-            pass
+        """Ne fait plus rien : arrêter/supprimer le conteneur à chaque
+        sortie de Maps était la cause du bug hors ligne."""
 
     def shutdown(self):
-        """Arrêt immédiat (à la fermeture de NOVA)."""
-        with self._lock:
-            if self._stop_timer is not None:
-                self._stop_timer.cancel()
-                self._stop_timer = None
-        self._force_remove()
-        self._running = False
+        """Arrête la surveillance, pas les conteneurs (ils doivent survivre
+        à la fermeture de NOVA et au redémarrage du Pi)."""
+        get_map_services().shutdown()
 
 
 _manager = None
 
 
 def get_tileserver(maps_data_dir=None):
-    """Instance partagée du gestionnaire."""
+    """Instance partagée (même signature qu'avant)."""
     global _manager
-    if _manager is None and maps_data_dir is not None:
+    if _manager is None:
         _manager = TileServerManager(maps_data_dir)
     return _manager

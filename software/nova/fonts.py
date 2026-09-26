@@ -113,6 +113,13 @@ ICONS = {
     # --- Explorateur de fichiers
     "more_vert": "\ue5d4",
     "arrow_upward": "\ue5d8",
+    # --- Clavier virtuel NOVA (codes vérifiés dans MaterialSymbolsOutlined.ttf)
+    "backspace": "\ue14a",
+    "keyboard_return": "\ue31b",
+    "keyboard_hide": "\ue31a",
+    "keyboard_capslock": "\ue318",
+    "shift": "\ue5f2",
+    "space_bar": "\ue256",
     "create_new_folder": "\ue2cc",
     "drive_file_rename_outline": "\ue9b1",
     # --- Types de fichiers

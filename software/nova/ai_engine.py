@@ -86,11 +86,21 @@ class SpeechToText:
         """Charge le modèle Whisper si faster-whisper est disponible."""
         try:
             from faster_whisper import WhisperModel
-            self.model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
+            # local_files_only : sans lui, faster-whisper interroge le hub
+            # Hugging Face à CHAQUE démarrage pour vérifier la version du
+            # modèle -> attente réseau (voire échec) hors ligne, alors que le
+            # modèle est déjà dans le cache local.
+            self.model = WhisperModel(self.model_name, device="cpu",
+                                      compute_type="int8", local_files_only=True)
             self.ready = True
             print("[stt] Whisper chargé :", self.model_name)
         except Exception as error:
-            print("[stt] Whisper indisponible ({}), mode simulation".format(error))
+            if "local" in str(error).lower() or "snapshot" in str(error).lower():
+                print("[stt] modèle Whisper '{}' absent du cache local : le "
+                      "télécharger une fois avec internet. Mode simulation."
+                      .format(self.model_name))
+            else:
+                print("[stt] Whisper indisponible ({}), mode simulation".format(error))
             self.model = None
             self.ready = False
 
@@ -383,6 +393,11 @@ class AssistantEngine:
         self.stt = SpeechToText()
         self.llm = LanguageModel()
         self.tts = TextToSpeech()
+        # llama.cpp n'est pas utilisable par deux threads à la fois : le
+        # préchauffage (arrière-plan, au démarrage) et une commande tapée
+        # pendant ce temps se partagent le modèle via ce verrou — la
+        # commande attend la fin du préchauffage au lieu de planter.
+        self._llm_lock = threading.Lock()
         # Persiste entre redemarrages (memory_store.py, SQLite) au lieu de
         # repartir de zero a chaque relance de NOVA.
         try:
@@ -477,8 +492,69 @@ class AssistantEngine:
             messages.extend(self.history)
             messages.append({"role": "user", "content": text})
 
-            raw = ""
-            first_char = None
+            raw, first_char = self._generer(messages, on_token)
+
+            reply = None
+            data = actions.extract_json(raw)
+            if data is not None:
+                confirmation = actions.execute_action(data, app=app)
+                if confirmation is None:
+                    # Action INVENTÉE par Qwen (observé : « traduis ... » ->
+                    # {"action": "traduire_texte"...}, qui n'existe pas) :
+                    # avant, ce JSON brut s'affichait à l'écran. On relance
+                    # une fois en demandant du texte ; s'il insiste, on dit
+                    # honnêtement que la fonction n'existe pas.
+                    print("[llm] action inexistante inventée :", data.get("action"))
+                    relance = messages + [
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content":
+                            "L'action « {} » n'existe pas. Réponds directement en "
+                            "texte simple, sans JSON.".format(data.get("action"))}]
+                    raw, first_char = self._generer(relance, on_token)
+                    if raw and first_char != "{" and actions.extract_json(raw) is None:
+                        reply = raw          # déjà diffusé au fil de l'eau
+                    else:
+                        confirmation = "Je n'ai pas encore cette fonctionnalité."
+                if confirmation and reply is None:
+                    reply = confirmation
+                    # Muette pendant le streaming (JSON) : "tapee" a la fin.
+                    self._taper(confirmation, on_token)
+            if reply is None and raw:
+                if first_char == "{":
+                    # JSON illisible : ne jamais afficher d'accolades brutes.
+                    reply = "Je n'ai pas compris. Pouvez-vous reformuler ?"
+                    self._taper(reply, on_token)
+                else:
+                    reply = raw
+
+            if reply:
+                self._remember("user", text)
+                self._remember("assistant", reply)
+                return reply
+
+        # Repli : pas de vrai LLM -> simulation (pas de memoire, cas degrade)
+        return self.llm.generate(text, on_token=on_token)
+
+    def say(self, text):
+        return self.tts.speak(text)
+
+    @staticmethod
+    def _taper(texte, on_token):
+        """Affiche un texte mot à mot (effet de frappe, comme le streaming)."""
+        if on_token:
+            for word in texte.split(" "):
+                on_token(word + " ")
+                time.sleep(0.02)
+
+    def _generer(self, messages, on_token):
+        """Une génération Qwen en streaming -> (texte brut, 1er caractère).
+
+        Le texte libre est diffusé au fil de l'eau ; une commande d'action
+        (1er caractère « { ») reste muette pour ne jamais afficher de JSON.
+        """
+        raw = ""
+        first_char = None
+        with self._llm_lock:
             try:
                 stream = self.llm.model.create_chat_completion(
                     messages=messages,
@@ -507,42 +583,54 @@ class AssistantEngine:
             except Exception as error:
                 print("[llm] erreur de génération :", error)
                 raw = ""
-            raw = raw.strip()
+        return raw.strip(), first_char
 
-            reply = None
-            data = actions.extract_json(raw)
-            if data is not None:
-                confirmation = actions.execute_action(data, app=app)
-                if confirmation:
-                    reply = confirmation
-                    # Muette pendant le streaming (JSON) : "tapee" a la fin.
-                    if on_token:
-                        for word in confirmation.split(" "):
-                            on_token(word + " ")
-                            time.sleep(0.02)
-            if reply is None and raw:
-                reply = raw
-                if first_char == "{" and on_token:
-                    # Ressemblait a une action mais JSON invalide/sans
-                    # confirmation : jamais diffusee plus haut, on la montre.
-                    for word in raw.split(" "):
-                        on_token(word + " ")
-                        time.sleep(0.02)
+    def warm_up(self):
+        """Fait lire une fois le prompt système à Qwen, au démarrage.
 
-            if reply:
-                self._remember("user", text)
-                self._remember("assistant", reply)
-                return reply
-
-        # Repli : pas de vrai LLM -> simulation (pas de memoire, cas degrade)
-        return self.llm.generate(text, on_token=on_token)
-
-    def say(self, text):
-        return self.tts.speak(text)
+        Mesuré : la toute première requête LLM prenait ~56 s sur PC (bien
+        plus sur le Pi) car Qwen devait d'abord évaluer tout le prompt
+        système (~1500 tokens). llama.cpp réutilise ensuite ce préfixe déjà
+        calculé tant qu'il ne change pas : en le calculant ici, en arrière-
+        plan, la première vraie commande ne paie plus ce coût.
+        """
+        if not (self.llm.ready and self.llm.model is not None):
+            return
+        from nova import assistant_actions as actions
+        t0 = time.time()
+        with self._llm_lock:
+            try:
+                self.llm.model.create_chat_completion(
+                    messages=[{"role": "system", "content": actions.build_system_prompt()},
+                              {"role": "user", "content": "ok"}],
+                    max_tokens=1, temperature=0.0)
+                print("[llm] prompt système préchargé en {:.1f} s".format(time.time() - t0))
+            except Exception as error:
+                print("[llm] préchauffage impossible :", error)
 
 
 _engine = None
 _engine_lock = threading.Lock()
+
+
+def preload_in_background():
+    """Charge le moteur (Whisper + Qwen + Piper) et préchauffe Qwen dans un
+    thread, dès le démarrage de NOVA : avant, tout se chargeait à la
+    PREMIÈRE commande, qui attendait donc chargement + lecture du prompt.
+    get_engine() étant protégé par un verrou, une commande tapée pendant le
+    préchargement attend simplement sa fin, sans double chargement.
+    """
+    def _run():
+        t0 = time.time()
+        try:
+            engine = get_engine()
+            engine.warm_up()
+            print("[ia] moteur prêt en {:.1f} s (préchargement)".format(time.time() - t0))
+        except Exception as error:
+            print("[ia] préchargement impossible :", error)
+    thread = threading.Thread(target=_run, name="ia-preload", daemon=True)
+    thread.start()
+    return thread
 
 
 def get_engine():

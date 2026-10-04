@@ -133,6 +133,11 @@ ICONS = {
     "content_paste": "\ue14f",
     "content_cut": "\ue14e",
     "download": "\ue2c4",
+    # --- Barre d'outils du Terminal (codes v\u00e9rifi\u00e9s dans la police)
+    "public": "\ue80b",           # globe : God's Eye View
+    "satellite_alt": "\ueb3a",
+    "stop_circle": "\uef71",
+    "hourglass_top": "\uea5b",
 }
 
 _registered = False

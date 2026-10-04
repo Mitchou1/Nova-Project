@@ -51,3 +51,8 @@ Thumbs.db
 
 # Sauvegardes locales avant modification
 .backups/
+
+# Outils tiers installés localement (God's Eye View, Node.js) : régénérables
+external/
+data/gods_eye.pid
+data/gods_eye_navigateur/

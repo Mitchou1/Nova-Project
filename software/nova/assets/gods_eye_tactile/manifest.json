@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "NOVA — God's Eye tactile",
+  "version": "1.1",
+  "description": "Adapte God's Eye View à l'écran tactile 800x480 de NOVA : un panneau à la fois, gros onglets, bouton de fermeture.",
+  "permissions": [],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "css": [
+        "tactile.css"
+      ],
+      "js": [
+        "tactile.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "globe.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}

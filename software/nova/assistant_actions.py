@@ -117,6 +117,13 @@ SUGGESTIONS
 34. Proposer des suggestions proactives (prochain evenement, destination frequente) :
    {"action": "suggestions"}
 
+OUTILS EN LIGNE
+35. Ouvrir God's Eye View, le globe 3D temps reel (vols, satellites, seismes ; demande
+   internet) :
+   {"action": "lancer_gods_eye"}
+36. Arreter God's Eye View (libere la memoire) :
+   {"action": "arreter_gods_eye"}
+
 Pour une question factuelle a laquelle tu n'es pas sur de la reponse, ou qui peut avoir
 change depuis ton entrainement, prefere "rechercher_web" plutot que d'inventer une reponse.
 
@@ -887,6 +894,18 @@ def try_fast_path(text):
 
     brut = _sans_accents(text.strip().lower())
 
+    # God's Eye View — teste avant « ouvre <app> » et les règles de carte.
+    # Whisper transcrit le nom de façons variées (« god's eye », « gods
+    # eye », « godseye », « god eyes ») d'où le motif souple.
+    god = r"(?:\bgod\W?s?\W?\s*eyes?\b|\bglobe\b|\bvue satellite\b)"
+    if re.search(r"\b(?:arrete|arreter|ferme|fermer|coupe|stoppe?)\s+(?:le\s+|la\s+)?"
+                 + god, brut):
+        return {"action": "arreter_gods_eye"}
+    if (re.search(r"\b(?:ouvre|ouvrir|lance|lancer|montre|affiche|demarre)"
+                  r"(?:\W?moi)?\s+(?:le\s+|la\s+|un\s+|une\s+)?" + god, brut)
+            or re.fullmatch(r"\s*(?:god\W?s?\W?\s*eyes?(?: view)?|vue satellite)\s*\W*", brut)):
+        return {"action": "lancer_gods_eye"}
+
     # "mode X" est ambigu entre theme d'interface et mode de la carte :
     # on tranche selon le mot capture.
     m = re.search(r"\bmode ([a-z]+)\b", brut)
@@ -1087,6 +1106,10 @@ def _dispatch_action(data, app=None):
         return _web_search(data)
     if action == "ouvrir_navigateur":
         return _open_browser(data)
+    if action == "lancer_gods_eye":
+        return _lancer_gods_eye()
+    if action == "arreter_gods_eye":
+        return _arreter_gods_eye()
     if action == "fichiers_lister":
         return _fichiers_lister(data, app)
     if action == "fichiers_creer_dossier":
@@ -1295,6 +1318,50 @@ def _open_browser(data):
         return "Je n'ai pas pu ouvrir de navigateur sur cet appareil."
     return ("J'ouvre la recherche pour « {} ».".format(requete) if requete
             else "J'ouvre le navigateur.")
+
+
+def _lancer_gods_eye():
+    """Démarre God's Eye View puis ouvre le navigateur.
+
+    On attend au plus 15 s : la plupart des échecs (pas d'internet, pas
+    installé, port pris) sont connus en moins d'une seconde et doivent être
+    DITS à l'utilisateur. Au-delà (premier démarrage lent sur le Pi), on
+    annonce honnêtement que c'est en cours : le navigateur s'ouvrira seul."""
+    import threading
+    from nova.gods_eye_manager import get_gods_eye, ouvrir_navigateur
+    fini = threading.Event()
+    resultat = {}
+
+    def pret(url):
+        resultat["erreur_nav"] = ouvrir_navigateur(url)
+        resultat["ok"] = True
+        fini.set()
+
+    def echec(msg):
+        resultat["erreur"] = msg
+        fini.set()
+
+    if not get_gods_eye().demarrer(on_ready=pret, on_error=echec):
+        return "God's Eye View est déjà en train de démarrer."
+    if not fini.wait(15):
+        return ("God's Eye View démarre, c'est un peu long sur le Pi. Le "
+                "navigateur s'ouvrira tout seul dès qu'il sera prêt.")
+    if "erreur" in resultat:
+        # Première ligne seulement : la suite (journal, chemins) est
+        # illisible à voix haute.
+        return "Impossible de lancer God's Eye View : {}".format(
+            resultat["erreur"].split("\n")[0])
+    if resultat.get("erreur_nav"):
+        return "God's Eye View tourne, mais {}".format(resultat["erreur_nav"])
+    return ("J'ouvre God's Eye View. Le globe 3D est lourd pour le Pi : "
+            "il peut mettre du temps à s'afficher.")
+
+
+def _arreter_gods_eye():
+    from nova.gods_eye_manager import get_gods_eye
+    if get_gods_eye().arreter():
+        return "God's Eye View est arrêté, la mémoire est libérée."
+    return "God's Eye View ne tournait pas."
 
 
 # ═════════════════════════════════════════════════════════════════════════

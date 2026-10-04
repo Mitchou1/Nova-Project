@@ -1,0 +1,277 @@
+/* NOVA — mise en page tactile de God's Eye View (voir tactile.js).
+   Tout est préfixé par .nova-tactile (posé par le script, seulement sur
+   God's Eye View) : rien ne change si le script ne s'exécute pas. */
+
+.nova-tactile {
+  --nova-rail: 46px;
+  --nova-feuille: min(330px, calc(100vw - var(--nova-rail) - 48px));
+  --nova-accent: #4fd8ff;
+}
+
+/* ── Barre d'onglets ─────────────────────────────────────────── */
+#nova-onglets {
+  position: fixed;
+  z-index: 2147483000;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--nova-rail);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  scrollbar-width: none;
+  background: rgba(4, 12, 16, 0.92);
+  border-right: 1px solid rgba(79, 216, 255, 0.35);
+}
+#nova-onglets button {
+  /* Les 11 onglets se partagent toute la hauteur : aucun ne sort de l'écran */
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  margin: 0;
+  padding: 2px 0;
+  border: 0;
+  border-bottom: 1px solid rgba(79, 216, 255, 0.12);
+  background: transparent;
+  color: #b9cacb;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#nova-onglets button.actif {
+  background: rgba(79, 216, 255, 0.18);
+  color: var(--nova-accent);
+  box-shadow: inset 3px 0 0 var(--nova-accent);
+}
+#nova-onglets button[data-onglet='fermer'] {
+  color: #ff6b5e;
+}
+#nova-onglets .nova-ico {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: currentColor;
+}
+#nova-onglets .nova-lib {
+  font: 600 7.5px/1 'JetBrains Mono', monospace;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+/* ── Ce qui encombre sans être une fonction ──────────────────── */
+.nova-tactile #title-bar {
+  display: none !important;
+}
+.nova-tactile:not(.nova-hud) #intel-hud {
+  display: none !important;
+}
+/* Bouton POWER UP flottant au milieu du globe : remplacé par l'onglet Clés */
+.nova-tactile #key-setup-chip {
+  display: none !important;
+}
+
+/* ── Un seul panneau à la fois ───────────────────────────────── */
+.nova-tactile .nova-gere:not([data-nova-actif]) {
+  display: none !important;
+}
+
+/* Les trois conteneurs de panneaux deviennent la même « feuille » à droite
+   des onglets. Vides, ils laissent passer le toucher vers le globe. */
+.nova-tactile #left-panel-stack,
+.nova-tactile #right-context-rail,
+.nova-tactile #command-dock {
+  position: fixed !important;
+  inset: 4px auto 4px calc(var(--nova-rail) + 4px) !important;
+  width: var(--nova-feuille) !important;
+  max-width: none !important;
+  height: auto !important;
+  max-height: none !important;
+  transform: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  justify-content: flex-start !important;
+  gap: 6px !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  pointer-events: none;
+  z-index: 2147482000 !important;
+  scrollbar-width: thin;
+}
+.nova-tactile #left-panel-stack > *,
+.nova-tactile #right-context-rail > *,
+.nova-tactile #command-dock > * {
+  pointer-events: auto;
+}
+
+/* Le panneau choisi occupe toute la largeur de la feuille */
+.nova-tactile [data-nova-actif] {
+  position: relative !important;
+  inset: auto !important;
+  transform: none !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  flex: 0 0 auto !important;
+  margin: 0 !important;
+}
+
+/* Plateaux du dock (Lieu, Styles) : l'outil les affiche en bulle AU-DESSUS
+   du dock (position absolue) ; dans la feuille, la bulle serait coupée. On
+   les remet dans le flux normal, sur toute la largeur. */
+.nova-tactile #command-dock [data-nova-actif] .dock-popover-content {
+  position: static !important;
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  transform: none !important;
+  box-sizing: border-box;
+}
+.nova-tactile #command-dock [data-nova-actif] .dock-popover-content::after {
+  display: none !important;
+}
+.nova-tactile #command-dock > [data-nova-actif] {
+  height: auto !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+}
+
+/* Rangées de villes / de styles : sur plusieurs lignes au lieu de
+   déborder sur le côté (le défilement horizontal est peu pratique au doigt) */
+.nova-tactile [data-nova-actif] .location-city-row,
+.nova-tactile [data-nova-actif] .location-pills,
+.nova-tactile [data-nova-actif] .poi-row-container,
+.nova-tactile [data-nova-actif] .button-grid {
+  flex-wrap: wrap !important;
+  overflow: visible !important;
+  max-width: 100% !important;
+  height: auto !important;
+  flex: 0 0 auto !important;
+  gap: 5px !important;
+}
+/* Lieu : la recherche sur toute la largeur, les villes en dessous */
+.nova-tactile [data-nova-actif] .location-search-wrap,
+.nova-tactile [data-nova-actif] .location-pills {
+  flex: 1 1 100% !important;
+  width: 100% !important;
+  order: 0;
+}
+.nova-tactile [data-nova-actif] #location-search {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  font-size: 12px !important;
+}
+/* Styles : l'outil étire ses cartes sur la hauteur de la bulle ; en feuille
+   elles passent sur deux lignes de hauteur fixe, sans chevaucher la suite. */
+.nova-tactile [data-nova-actif] .style-btn {
+  flex: 1 1 60px !important;
+  height: 50px !important;
+  min-height: 50px !important;
+  padding: 4px 2px !important;
+  gap: 2px !important;
+  justify-content: center !important;
+}
+/* En-tête et épingle des plateaux du dock : sans objet ici (l'onglet ouvre
+   et ferme, et « épingler au dock » n'a plus de sens), et leur libellé
+   s'affichait tronqué (« LO », « ESETS »). */
+.nova-tactile #command-dock [data-nova-actif] .dock-tray-toggle,
+.nova-tactile #command-dock [data-nova-actif] .location-toolbar,
+.nova-tactile #command-dock [data-nova-actif] .dock-pin-btn {
+  display: none !important;
+}
+
+/* ── Fenêtres de l'outil (premier lancement, clés API) ─────────
+   Sous 620 px de large l'outil les pose au-dessus du dock (bottom: 5.8rem) :
+   sur un écran de 300 px de haut le haut de la fenêtre sortait de l'écran.
+   Ici : plein cadre à droite des onglets, contenu défilant. */
+.nova-tactile #first-run-launcher,
+.nova-tactile #key-setup {
+  inset: 4px 4px 4px calc(var(--nova-rail) + 4px) !important;
+  width: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  transform: none !important;
+  overflow-y: auto !important;
+  box-sizing: border-box;
+}
+/* Une seule barre de défilement (celle de la fenêtre), pas deux imbriquées */
+.nova-tactile #key-setup .key-setup-rows,
+.nova-tactile #first-run-launcher .first-run-choices {
+  max-height: none !important;
+  overflow: visible !important;
+  flex: 0 0 auto !important;
+}
+/* Un panneau ouvert passe devant : la fenêtre d'accueil revient quand on
+   referme le panneau. */
+.nova-tactile[data-nova-onglet] #first-run-launcher {
+  display: none !important;
+}
+.nova-tactile #first-run-launcher button,
+.nova-tactile #key-setup button,
+.nova-tactile #key-setup input {
+  min-height: 28px;
+}
+
+/* Cibles tactiles : dans le panneau ouvert, aucun bouton plus petit que
+   ~28 px CSS (≈ 42 px à l'écran avec le zoom 1.5). */
+.nova-tactile [data-nova-actif] button,
+.nova-tactile [data-nova-actif] select,
+.nova-tactile [data-nova-actif] input[type='text'],
+.nova-tactile [data-nova-actif] input[type='search'] {
+  min-height: 28px !important;
+}
+.nova-tactile [data-nova-actif] .panel-collapse-btn,
+.nova-tactile [data-nova-actif] .dock-tray-toggle {
+  min-width: 28px !important;
+}
+/* Curseurs : piste et poignée plus épaisses pour le doigt */
+.nova-tactile [data-nova-actif] input[type='range'] {
+  min-height: 24px !important;
+}
+
+/* ── Crédits Cesium/Esri : gardés (attribution obligatoire), mais petits
+   et en bas à droite au lieu du milieu de l'écran ── */
+.nova-tactile body #cesium-credits {
+  position: fixed !important;
+  inset: auto 4px 2px auto !important;
+  transform: scale(0.6) !important;
+  transform-origin: bottom right !important;
+  max-width: none !important;
+  z-index: 1 !important;
+}
+
+/* ── Boutons de zoom du globe (globe.js) ─────────────────────── */
+#nova-zoom {
+  position: fixed;
+  z-index: 2147481000;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#nova-zoom button {
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(79, 216, 255, 0.45);
+  border-radius: 6px;
+  background: rgba(4, 12, 16, 0.78);
+  color: #4fd8ff;
+  font: 500 20px/1 'JetBrains Mono', monospace;
+  touch-action: none;
+  user-select: none;
+}
+#nova-zoom button:active {
+  background: rgba(79, 216, 255, 0.3);
+}
+/* Fenêtres plein cadre ouvertes : les boutons de zoom ne servent pas */
+html:has(#first-run-launcher.visible) #nova-zoom,
+html:has(#key-setup.visible) #nova-zoom {
+  display: none;
+}

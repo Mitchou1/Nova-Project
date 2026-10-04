@@ -45,6 +45,26 @@ _RACCOURCIS = [
 
 _MAX_LIGNES = 600      # limite la memoire/l'affichage sur une session longue
 
+# Barre d'outils : des programmes externes lancés à la demande (serveurs web
+# locaux, etc.). Ajouter un outil = ajouter une entrée ici, sans toucher à la
+# mise en page. « gestionnaire » = "module:fonction" qui renvoie un objet
+# offrant demarrer(on_progress, on_ready, on_error), arreter() et
+# en_marche() ; on_ready reçoit l'URL à ouvrir dans le navigateur (ou None).
+# Le gestionnaire n'est importé que par le Terminal (module léger) : le
+# serveur, lui, ne démarre qu'à l'appui sur le bouton.
+_OUTILS = [
+    {
+        "id": "gods_eye",
+        "libelle": "GOD'S EYE",
+        "icone": "public",
+        "gestionnaire": "nova.gods_eye_manager:get_gods_eye",
+        # Prévenir honnêtement : sur le Pi 5, quelques images/s c'est normal
+        "note": ("Globe 3D WebGL : sur le Pi 5, chargement long et quelques "
+                 "images/s, c'est normal (pas un bug). Bouton ■ pour arrêter "
+                 "le serveur et récupérer la RAM."),
+    },
+]
+
 
 class CommandInput(TextInput):
     """Champ de saisie : flèches haut/bas pour rappeler l'historique."""
@@ -162,6 +182,9 @@ class TerminalApp(BaseApp):
         defilement_raccourcis.add_widget(ligne_raccourcis)
         colonne.add_widget(defilement_raccourcis)
 
+        # ─── Barre d'outils (juste au-dessus de la ligne de commande) ─────
+        colonne.add_widget(self._construire_barre_outils())
+
         # ─── Ligne de commande ────────────────────────────────────────
         rangee = BoxLayout(size_hint=(1, None), height=dp(46), spacing=dp(8))
         self.prompt_label = Label(
@@ -188,6 +211,134 @@ class TerminalApp(BaseApp):
 
         colonne.add_widget(rangee)
         main.add_widget(colonne)
+
+    # ------------------------------------------------------------------
+    # Barre d'outils externes
+    # ------------------------------------------------------------------
+    def _construire_barre_outils(self):
+        """Une rangée défilante : pour chaque outil, un bouton de lancement
+        et un bouton d'arrêt (grisé tant que l'outil ne tourne pas)."""
+        defilement = ScrollView(size_hint=(1, None), height=CIBLE_MIN,
+                                do_scroll_y=False, bar_width=0)
+        ligne = BoxLayout(size_hint=(None, 1), spacing=dp(6))
+        ligne.bind(minimum_width=ligne.setter("width"))
+        self._outils = {}
+        for spec in _OUTILS:
+            bouton = NeonButton(text=spec["libelle"], icon=spec["icone"],
+                                size_hint=(None, 1), width=dp(132),
+                                font_size=dp(9), icon_size=dp(17),
+                                corner_radius=dp(2))
+            bouton.bind(on_release=lambda _b, s=spec: self._lancer_outil(s))
+            stop = NeonButton(icon="stop_circle", accent="error",
+                              size_hint=(None, 1), width=CIBLE_MIN,
+                              corner_radius=dp(2))
+            stop.bind(on_release=lambda _b, s=spec: self._arreter_outil(s))
+            ligne.add_widget(bouton)
+            ligne.add_widget(stop)
+            self._outils[spec["id"]] = {"bouton": bouton, "stop": stop,
+                                        "occupe": False}
+            self._maj_stop_outil(spec, False)
+        defilement.add_widget(ligne)
+        return defilement
+
+    @staticmethod
+    def _gestionnaire(spec):
+        import importlib
+        module, fonction = spec["gestionnaire"].split(":")
+        return getattr(importlib.import_module(module), fonction)()
+
+    def _maj_stop_outil(self, spec, actif):
+        stop = self._outils[spec["id"]]["stop"]
+        stop.disabled = not actif
+        stop.opacity = 1 if actif else 0.4
+
+    def _etat_bouton_outil(self, spec, demarrage):
+        """« DÉMARRAGE… » + désactivé pendant le lancement : évite les
+        doubles appuis (fréquents sur la dalle tactile du Pi)."""
+        widgets = self._outils[spec["id"]]
+        widgets["occupe"] = demarrage
+        bouton = widgets["bouton"]
+        bouton.disabled = demarrage
+        bouton.text = "DÉMARRAGE…" if demarrage else spec["libelle"]
+        bouton.icon = "hourglass_top" if demarrage else spec["icone"]
+
+    def _lancer_outil(self, spec):
+        if self._outils[spec["id"]]["occupe"]:
+            return
+        prefixe = "[{}]".format(spec["libelle"])
+        try:
+            gestionnaire = self._gestionnaire(spec)
+        except Exception as error:
+            self._afficher("{} module indisponible : {}".format(prefixe, error))
+            return
+        self._etat_bouton_outil(spec, True)
+        self._afficher("{} lancement…".format(prefixe))
+
+        # Les rappels arrivent depuis le thread du gestionnaire : on repasse
+        # par l'horloge Kivy pour toucher à l'interface.
+        def progres(msg):
+            Clock.schedule_once(lambda _dt: self._afficher(
+                "{} {}".format(prefixe, msg)), 0)
+
+        def pret(url):
+            Clock.schedule_once(lambda _dt: self._outil_pret(spec, url), 0)
+
+        def echec(msg):
+            Clock.schedule_once(lambda _dt: self._outil_echec(spec, msg), 0)
+
+        gestionnaire.demarrer(on_progress=progres, on_ready=pret, on_error=echec)
+
+    def _outil_pret(self, spec, url):
+        prefixe = "[{}]".format(spec["libelle"])
+        self._etat_bouton_outil(spec, False)
+        self._maj_stop_outil(spec, True)
+        if url:
+            from nova.gods_eye_manager import ouvrir_navigateur
+            self._afficher("{} ouverture du navigateur sur {}".format(prefixe, url))
+            erreur = ouvrir_navigateur(url)
+            if erreur:
+                self._afficher("{} {}".format(prefixe, erreur))
+        if spec.get("note"):
+            self._afficher("{} {}".format(prefixe, spec["note"]))
+
+    def _outil_echec(self, spec, msg):
+        self._etat_bouton_outil(spec, False)
+        self._afficher("[{}] ÉCHEC : {}".format(spec["libelle"], msg))
+        try:
+            self._maj_stop_outil(spec, self._gestionnaire(spec).en_marche())
+        except Exception:
+            self._maj_stop_outil(spec, False)
+
+    def _arreter_outil(self, spec):
+        prefixe = "[{}]".format(spec["libelle"])
+        self._maj_stop_outil(spec, False)
+        self._afficher("{} arrêt du serveur…".format(prefixe))
+
+        # L'arrêt peut attendre quelques secondes (SIGTERM puis SIGKILL) :
+        # hors du fil de l'interface.
+        def travail():
+            try:
+                arrete = self._gestionnaire(spec).arreter()
+                msg = "arrêté, mémoire libérée." if arrete else "ne tournait pas."
+            except Exception as error:
+                msg = "arrêt impossible : {}".format(error)
+            Clock.schedule_once(lambda _dt: self._afficher(
+                "{} {}".format(prefixe, msg)), 0)
+        threading.Thread(target=travail, daemon=True).start()
+
+    def on_pre_enter(self, *args):
+        """En revenant dans le Terminal, l'état d'arrêt reflète la réalité
+        (un outil a pu être lancé par la voix, ou arrêté ailleurs)."""
+        for spec in _OUTILS:
+            widgets = getattr(self, "_outils", {}).get(spec["id"])
+            if widgets is None or widgets["occupe"]:
+                continue
+            try:
+                self._maj_stop_outil(spec, self._gestionnaire(spec).en_marche())
+            except Exception:
+                pass
+        parent = getattr(super(), "on_pre_enter", None)
+        return parent(*args) if parent else None
 
     # ------------------------------------------------------------------
     # Affichage

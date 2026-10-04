@@ -6,7 +6,7 @@
         "height": 480,
         "rotation": 0
     },
-    "theme": "classic",
+    "theme": "cyberpunk",
     "language": "en",
     "wifi": {
         "auto_connect": true
@@ -16,8 +16,8 @@
         "auto_sleep_minutes": 5
     },
     "audio": {
-        "volume": 47,
-        "brightness": 30
+        "volume": 100,
+        "brightness": 100
     },
     "ui": {
         "particles": "auto",
@@ -37,6 +37,15 @@
         "whisper_model": "small",
         "llm_model": "qwen2.5-3b-instruct-q5_k_m.gguf",
         "tts_voice": "fr_FR-siwis-medium.onnx"
+    },
+    "gods_eye": {
+        "enabled": true,
+        "install_path": "~/nova2/external/gods-eye-view",
+        "port": 4173,
+        "auto_stop_on_exit": true,
+        "startup_timeout": 120,
+        "zoom": 1.5,
+        "tactile": true
     },
     "bluetooth_enabled": false,
     "notifications": true,

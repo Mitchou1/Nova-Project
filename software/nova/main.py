@@ -257,6 +257,14 @@ class NovaApp(App):
         except Exception:
             pass
 
+        # God's Eye View (serveur Node lancé depuis le Terminal) : arrêté à
+        # la fermeture si gods_eye.auto_stop_on_exit, pour rendre sa RAM.
+        try:
+            from nova.gods_eye_manager import get_gods_eye
+            get_gods_eye().a_la_fermeture()
+        except Exception as error:
+            print("[gods_eye] arrêt à la fermeture impossible :", error)
+
         launcher = getattr(self, "launcher", None)
         if launcher is not None:
             launcher.cleanup()
